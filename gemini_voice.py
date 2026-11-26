@@ -14,7 +14,7 @@ import subprocess
 from pronunciation import prepare_for_speech
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_TTS_MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+from llm_utils import gemini_tts_models, is_dead, mark_dead
 GEMINI_TTS_VOICE = os.environ.get("GEMINI_TTS_VOICE", "Charon")
 
 # توجيه الأداء بالإنجليزي (النموذج بيلتزم بيه أكتر ومش بيقراه بصوت عالي)
@@ -73,35 +73,42 @@ def _synth_gemini_segment(text, out_wav):
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     last_err = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_TTS_MODEL,
-                contents=EGYPTIAN_DIRECTIVE + text,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    temperature=0.6,
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=GEMINI_TTS_VOICE
+    for tts_model in gemini_tts_models():
+        if is_dead(tts_model):
+            continue
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = client.models.generate_content(
+                    model=tts_model,
+                    contents=EGYPTIAN_DIRECTIVE + text,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        temperature=0.6,
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                    voice_name=GEMINI_TTS_VOICE
+                                )
                             )
-                        )
+                        ),
                     ),
-                ),
-            )
-            data = response.candidates[0].content.parts[0].inline_data.data
-            # حماية: مقطع قصير جداً بالنسبة للنص معناه إن النموذج رجّع صوت ناقص
-            seconds = len(data) / (24000 * 2)
-            if seconds < max(1.0, len(text) / 30.0):
-                raise RuntimeError(f"صوت قصير مشبوه ({seconds:.1f}ث لنص {len(text)} حرف)")
-            _pcm_to_wav(data, out_wav)
-            return True
-        except Exception as e:
-            last_err = e
-            wait = (5, 20, 45)[min(attempt, 2)]
-            print(f"⚠️ محاولة Gemini {attempt + 1} فشلت: {e} - انتظار {wait}ث")
-            time.sleep(wait)
+                )
+                data = response.candidates[0].content.parts[0].inline_data.data
+                # حماية: مقطع قصير جداً بالنسبة للنص معناه إن النموذج رجّع صوت ناقص
+                seconds = len(data) / (24000 * 2)
+                if seconds < max(1.0, len(text) / 30.0):
+                    raise RuntimeError(f"صوت قصير مشبوه ({seconds:.1f}ث لنص {len(text)} حرف)")
+                _pcm_to_wav(data, out_wav)
+                return True
+            except Exception as e:
+                last_err = e
+                mark_dead(tts_model, e)
+                if is_dead(tts_model):
+                    print(f"⚠️ موديل الصوت {tts_model} مش متاح، هجرب اللي بعده: {str(e)[:120]}")
+                    break
+                wait = (5, 20, 45)[min(attempt, 2)]
+                print(f"⚠️ محاولة Gemini ({tts_model}) {attempt + 1} فشلت: {e} - انتظار {wait}ث")
+                time.sleep(wait)
     print(f"❌ فشل مقطع Gemini نهائياً: {last_err}")
     return False
 
