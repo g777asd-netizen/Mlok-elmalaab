@@ -307,3 +307,171 @@ def enhance_image(path):
         print("✨ تم تحسين الصورة")
     except Exception as e:
         print(f"⚠️ تخطي تحسين الصورة: {e}")
+
+
+def draw_anchored(draw, xy, text, font, fill, anchor="la"):
+    """رسم نص عربي بموضع دقيق: xy هو نقطة المرساة (l/m/r أفقياً، وأعلى الحبر رأسياً).
+    يعتمد على قياس الحبر الفعلي textbbox فيعمل بشكل صحيح مع وبدون raqm."""
+    t, kw = _ar(text)
+    bbox = draw.textbbox((0, 0), t, font=font, **kw)
+    x, y = xy
+    if anchor.startswith('m'):
+        x = x - (bbox[0] + bbox[2]) / 2
+    elif anchor.startswith('r'):
+        x = x - bbox[2]
+    else:
+        x = x - bbox[0]
+    draw.text((x, y - bbox[1]), t, font=font, fill=fill, **kw)
+
+
+# ====================== شرائح المحتوى (فيديو بدون أي صور خارجية) ======================
+def _fit_font(draw, text, start_size, max_width, max_lines, min_size):
+    """أكبر خط يجعل النص يتسع في max_lines بدون اختصار"""
+    size = int(start_size)
+    while size > min_size:
+        font = get_font(size, bold=True)
+        lines, truncated = wrap_rtl(draw, text, font, max_width, max_lines=max_lines)
+        if not truncated:
+            return font, lines
+        size = int(size * 0.92)
+    font = get_font(min_size, bold=True)
+    lines, _ = wrap_rtl(draw, text, font, max_width, max_lines=max_lines)
+    return font, lines
+
+
+def _to_arabic_digits(n):
+    return "".join("٠١٢٣٤٥٦٧٨٩"[int(d)] if d.isdigit() else d for d in str(n))
+
+
+def create_content_slide(text, out_path, width, height, index=1, total=1, kicker=""):
+    """
+    شريحة محتوى أصلية بالهوية البصرية: خلفية كحلية متدرجة + إطار ذهبي
+    + شارة القناة أعلى + النص بخط كبير في المنتصف + شريط تقدم ذهبي أسفل.
+    تُستخدم بدلاً من صور المواقع (صفر محتوى محمي بحقوق ملكية).
+    """
+    ensure_fonts()
+    img = _bg_navy(width, height)
+    draw = ImageDraw.Draw(img)
+    _gold_frame(draw, width, height)
+
+    safe_bottom = int(height * 0.90)   # منطقة آمنة فوق الشريط السفلي
+
+    # شارة القناة أعلى اليمين
+    chip_font = get_font(int(height * 0.030), bold=True)
+    cw, ch = text_size(draw, CHANNEL_NAME_AR, chip_font)
+    pad_x, pad_y = int(width * 0.012), int(height * 0.010)
+    cx1 = width - int(width * 0.045) - cw - pad_x * 2
+    cy0 = int(height * 0.045)
+    draw.rounded_rectangle(
+        [(cx1, cy0), (cx1 + cw + pad_x * 2, cy0 + ch + pad_y * 2)],
+        radius=(ch + pad_y * 2) / 2, fill=BRAND["navy_dark"],
+        outline=BRAND["gold"], width=max(2, height // 450))
+    draw_anchored(draw, (cx1 + cw + pad_x, cy0 + pad_y), CHANNEL_NAME_AR,
+                  chip_font, BRAND["gold"], anchor="ra")
+
+    # العداد أعلى اليسار
+    if total > 1:
+        counter = f"{_to_arabic_digits(index)} / {_to_arabic_digits(total)}"
+        cnt_font = get_font(int(height * 0.026), bold=False)
+        draw_anchored(draw, (int(width * 0.05), cy0 + pad_y), counter, cnt_font,
+                      BRAND["gray"], anchor="la")
+
+    # سطر افتتاحي صغير (اختياري)
+    top_y = int(height * 0.18)
+    if kicker:
+        k_font = get_font(int(height * 0.034), bold=True)
+        kw, kh = text_size(draw, kicker, k_font)
+        draw_anchored(draw, (width / 2, top_y), kicker, k_font, BRAND["gold"], anchor="ma")
+        line_y = top_y + kh + int(height * 0.028)
+        draw.rectangle([(int(width * 0.42), line_y), (int(width * 0.58), line_y + max(2, height // 350))],
+                       fill=BRAND["gold"])
+        top_y = line_y + int(height * 0.04)
+
+    # النص الرئيسي: أكبر خط يتسع في 4 سطور داخل المنطقة الآمنة
+    max_lines = 4 if height >= width else 5
+    area_top = top_y + int(height * 0.03)
+    area_bottom = safe_bottom - int(height * 0.06)
+    font, lines = _fit_font(draw, text, int(height * 0.075), int(width * 0.82),
+                            max_lines, int(height * 0.030))
+    line_gap = int(font.size * 0.38)
+    sizes = [text_size(draw, ln, font) for ln in lines]
+    total_h = sum(lh for _, lh in sizes) + line_gap * (len(lines) - 1)
+    y = area_top + max(0, (area_bottom - area_top - total_h) // 2)
+    for ln, (lw, lh) in zip(lines, sizes):
+        draw_anchored(draw, (width / 2 + 3, y + 3), ln, font, (0, 0, 0), anchor="ma")
+        draw_anchored(draw, (width / 2, y), ln, font, BRAND["white"], anchor="ma")
+        y += lh + line_gap
+
+    # شريط التقدم الذهبي أسفل
+    if total > 1:
+        bar_w = int(width * 0.5)
+        bar_x = (width - bar_w) // 2
+        bar_y = safe_bottom - int(height * 0.012)
+        draw.rounded_rectangle([(bar_x, bar_y), (bar_x + bar_w, bar_y + max(4, height // 220))],
+                               radius=max(2, height // 440), fill=BRAND["navy_dark"],
+                               outline=BRAND["gray"], width=1)
+        fill_w = int(bar_w * index / total)
+        if fill_w > 0:
+            draw.rounded_rectangle([(bar_x, bar_y), (bar_x + fill_w, bar_y + max(4, height // 220))],
+                                   radius=max(2, height // 440), fill=BRAND["gold"])
+
+    img.save(out_path)
+    return out_path
+
+
+def create_thumbnail(title, out_path="thumbnail.png", width=1280, height=720, breaking=True):
+    """
+    صورة مصغرة أصلية بالهوية البصرية (١٢٨٠×٧٢٠):
+    عنوان كبير بخط Cairo + شارة عاجل + شريط ذهبي + اسم القناة. لا صور خارجية.
+    """
+    ensure_fonts()
+    img = _bg_navy(width, height)
+    draw = ImageDraw.Draw(img)
+
+    # شريط ذهبي سفلي عريض + كحلي غامق
+    band_h = int(height * 0.16)
+    draw.rectangle([(0, height - band_h), (width, height)], fill=BRAND["navy_dark"])
+    draw.rectangle([(0, height - band_h), (width, height - band_h + max(6, height // 120))],
+                   fill=BRAND["gold"])
+
+    # اسم القناة داخل الشريط
+    name_font = get_font(int(band_h * 0.40), bold=True)
+    nw, nh = text_size(draw, CHANNEL_NAME_AR, name_font)
+    draw_anchored(draw, (width / 2, height - band_h + (band_h - nh) / 2 - int(height * 0.006)),
+                  CHANNEL_NAME_AR, name_font, BRAND["gold"], anchor="ma")
+
+    # إطار ذهبي
+    m = int(min(width, height) * 0.030)
+    draw.rectangle([(m, m), (width - m, height - m)], outline=BRAND["gold"],
+                   width=max(4, height // 220))
+
+    # شارة عاجل
+    top_area_bottom = height - band_h - m
+    if breaking:
+        badge_font = get_font(int(height * 0.075), bold=True)
+        badge_text = "عاجل"
+        bw, bh = text_size(draw, badge_text, badge_font)
+        bp_x, bp_y = int(width * 0.022), int(height * 0.014)
+        bx0 = width - bw - bp_x * 2 - int(width * 0.035)
+        by0 = int(height * 0.045)
+        draw.rounded_rectangle([(bx0, by0), (bx0 + bw + bp_x * 2, by0 + bh + bp_y * 2)],
+                               radius=(bh + bp_y * 2) / 2, fill=BRAND["red"])
+        draw_anchored(draw, (bx0 + bw + bp_x, by0 + bp_y), badge_text, badge_font,
+                      BRAND["white"], anchor="ra")
+
+    # العنوان: أكبر خط يتسع في 3 سطور
+    font, lines = _fit_font(draw, title, int(height * 0.115), int(width * 0.84), 3,
+                            int(height * 0.055))
+    line_gap = int(font.size * 0.30)
+    sizes = [text_size(draw, ln, font) for ln in lines]
+    total_h = sum(lh for _, lh in sizes) + line_gap * (len(lines) - 1)
+    area_top = int(height * 0.16)
+    y = area_top + max(0, (top_area_bottom - area_top - total_h) // 2)
+    for ln, (lw, lh) in zip(lines, sizes):
+        # ظل قوي للوضوح على الموبايل
+        draw_anchored(draw, (width / 2 + 4, y + 4), ln, font, (0, 0, 0), anchor="ma")
+        draw_anchored(draw, (width / 2, y), ln, font, BRAND["white"], anchor="ma")
+        y += lh + line_gap
+
+    img.save(out_path)
+    return out_path
