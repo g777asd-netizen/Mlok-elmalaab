@@ -20,6 +20,11 @@ on:
         required: false
         default: ''
         type: string
+      text:
+        description: 'اختياري: الصق نص أو ملخص الفيديو هنا لو يوتيوب حاجب (٣٠٠ حرف على الأقل). بيتكتب منه بس'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -79,7 +84,7 @@ jobs:
         pip install requests beautifulsoup4 Pillow numpy
         pip install moviepy==1.0.3
         pip install edge-tts groq yt-dlp googlenewsdecoder
-        pip install google-genai arabic-reshaper python-bidi
+        pip install google-genai arabic-reshaper python-bidi youtube-transcript-api
         pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
 
     - name: Run Bot
@@ -96,6 +101,9 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         MANUAL_URL: ${{ github.event.inputs.url }}
         MANUAL_KEYWORD: ${{ github.event.inputs.keyword }}
+        MANUAL_TEXT: ${{ github.event.inputs.text }}
+        YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        YT_PROXY: ${{ secrets.YT_PROXY }}
         GEMINI_TTS_VOICE: Charon
       run: python youtube_arabic.py
 
