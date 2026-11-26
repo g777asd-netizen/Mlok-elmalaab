@@ -577,7 +577,7 @@ def _finalize_content(content, article_text, model):
     content['hashtags'] = tags[:15]
 
     if len(content['video_title']) > 60:
-        content['video_title'] = content['video_title'][:57] + "..."
+        content['video_title'] = content['video_title'][:57].rsplit(' ', 1)[0] + "..."
 
     if len(content['shorts_title']) > 40:
         content['shorts_title'] = content['shorts_title'][:37] + "..."
@@ -592,13 +592,15 @@ def generate_ai_content(article):
     client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
     # تقصير نص المقال عشان مايتجاوزش حد التوكنز بالدقيقة (TPM) في الخطة المجانية
-    MAX_ARTICLE_CHARS = 3000
+    MAX_ARTICLE_CHARS = 12000 if article.get('kind') == 'video' else 3000
     article_text = article['text']
     if len(article_text) > MAX_ARTICLE_CHARS:
         article_text = article_text[:MAX_ARTICLE_CHARS]
 
+    # طول السكريبت بيتناسب مع المحتوى الحقيقي: حوالي كلمة لكل ٧ حروف من المصدر، من ١٢٠ لـ ٩٠٠ كلمة
     n = len(article_text)
-    words = "700-900" if n >= 1500 else ("400-550" if n >= 700 else "200-300")
+    _hi = max(120, min(900, n // 7))
+    words = f"{int(_hi * 0.75)}-{_hi}"
     prompt = build_prompt(article['title'], article_text, words=words)
 
     # Gemini وGroq متساويين: بنبدّل بينهم (Gemini أولاً) عشان فشل مزود واحد ميوقفش التشغيلة
@@ -972,6 +974,57 @@ def upload_to_facebook(video_path, message_body, hashtags_list):
         return False
 
 
+
+# ====================== حارس الأسماء والعنوان (SEO + دقة) ======================
+def _nk(w):
+    from pronunciation import _norm_key
+    k = _norm_key(w)
+    for p in ("وال", "بال", "لل", "ال", "و", "ب", "ل"):
+        if k.startswith(p) and len(k) - len(p) >= 3:
+            return k[len(p):]
+    return k
+
+
+def apply_title_and_name_guard(ai, payload):
+    """1) عنوان الفيديو = عنوان المصدر حرفياً (الأسماء مش بتتغير) بعد تنضيف لاحقة يوتيوب.
+       2) أي كلمة في العناوين/السكريبت قريبة جداً من اسم في عنوان المصدر لكن مكتوبة مختلفة، بتتصلح للاسم الأصلي.
+       3) عنوان الشورتس لو فيه كلمة مش موجودة في المصدر أصلاً، بيتبدل بنسخة مختصرة من عنوان المصدر."""
+    import difflib
+    src_title = re.sub(r"\s*[-|–]\s*YouTube\s*$", "", payload.get('title', '')).strip()
+    src_all = src_title + " " + payload.get('text', '')
+    src_keys = {_nk(w) for w in re.findall(r"[\u0600-\u06FF]{3,}", src_all)}
+    from pronunciation import COMMON_NOT_NAMES
+    names = {}
+    for w in re.findall(r"[\u0600-\u06FF]{4,}", src_title):
+        k = _nk(w)
+        if k not in COMMON_NOT_NAMES:
+            names[k] = w
+
+    def fix(text):
+        def rep(m):
+            w = m.group(0)
+            k = _nk(w)
+            if k in src_keys or k in names:
+                return w
+            best = difflib.get_close_matches(k, list(names), n=1, cutoff=0.72)
+            if best:
+                print(f"🛠️ اسم اتغير ({w}) واتصلح لـ ({names[best[0]]})")
+                return names[best[0]]
+            return w
+        return re.sub(r"[\u0600-\u06FF]{4,}", rep, text or "")
+
+    for k in ('video_script', 'shorts_script', 'video_description', 'facebook_post', 'shorts_title'):
+        if ai.get(k):
+            ai[k] = fix(ai[k])
+    if src_title and payload.get('kind') in ('video', 'article'):
+        ai['video_title'] = src_title[:100]   # حد يوتيوب ١٠٠ حرف؛ الأفضل للسيو أقل من ٦٠ فالمصدر هو المرجع
+    # عنوان الشورتس: كل كلماته لازم تكون في المصدر
+    bad = [w for w in re.findall(r"[\u0600-\u06FF]{4,}", ai.get('shorts_title', '')) if _nk(w) not in src_keys]
+    if bad and src_title:
+        print(f"⚠️ عنوان الشورتس فيه كلمات مش في المصدر {bad}، هستخدم عنوان المصدر")
+        ai['shorts_title'] = src_title[:40]
+    return ai
+
 # ====================== اختيار المحتوى حسب التناوب ======================
 def pick_manual_content():
     """
@@ -1004,6 +1057,8 @@ def pick_manual_content():
 
     payload['mode'] = 'manual'
     ai = generate_ai_content(payload)
+    if ai:
+        ai = apply_title_and_name_guard(ai, payload)
     if not ai:
         print("❌ فشل توليد السكريبت من المحتوى ده (غالباً المحتوى قليل أو الموديلات رفضت النص).")
         sys.exit(1)
