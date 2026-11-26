@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # مثبت: ubuntu-latest اتنقل لـ 26.04 وتثبيت الحزم عليه بيعلق
     timeout-minutes: 90
 
     steps:
@@ -66,16 +66,22 @@ jobs:
 
     - name: Install System Dependencies
       if: steps.guard.outputs.skip != 'true'
-      timeout-minutes: 8
+      timeout-minutes: 12
       run: |
-        sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list 2>/dev/null || true
-        APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
-        sudo apt-get $APT update || true
-        sudo apt-get $APT install -y --no-install-recommends ffmpeg imagemagick fonts-dejavu-core fonts-freefont-ttf || true
-        which ffmpeg
+        APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Dpkg::Use-Pty=0"
+        need=""
+        command -v ffmpeg  >/dev/null 2>&1 || need="$need ffmpeg"
+        command -v ffprobe >/dev/null 2>&1 || need="$need ffmpeg"
+        if [ -n "$need" ]; then
+          sudo apt-get $APT update || true
+          sudo apt-get $APT install -y --no-install-recommends ffmpeg || sudo apt-get $APT install -y --no-install-recommends ffmpeg
+        fi
+        # اختياري: ImageMagick والخطوط (لو فشلوا مش بيوقفوا التشغيلة)
+        command -v convert >/dev/null 2>&1 || sudo apt-get $APT install -y --no-install-recommends imagemagick fonts-dejavu-core fonts-freefont-ttf || true
         for f in /etc/ImageMagick-6/policy.xml /etc/ImageMagick-7/policy.xml; do
           [ -f "$f" ] && sudo sed -i 's/none/read,write/g' "$f" || true
         done
+        which ffmpeg && which ffprobe
 
     - name: Install Python Packages
       if: steps.guard.outputs.skip != 'true'
