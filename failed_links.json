@@ -4,5 +4,11 @@
         "source": "Google Trends مصر",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-26 05:57:25"
+    },
+    {
+        "link": "https://www.youtube.com/watch?v=Ozz5L5PiNZw&feature=youtu.be",
+        "source": "youtube.com",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-26 08:54:53"
     }
 ]
