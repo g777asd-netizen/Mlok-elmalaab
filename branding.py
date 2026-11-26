@@ -476,3 +476,358 @@ def create_thumbnail(title, out_path="thumbnail.png", width=1280, height=720, br
 
     img.save(out_path)
     return out_path
+
+
+# =====================================================================
+#  محرك الفيديو المتحرك — كل إطار يُرسم بالكود (بدون أي صورة خارجية)
+#  خلفية كحلية حية + كروت تنزلق + نص يظهر سطراً سطراً + تايم لاين ذهبي
+#  + عدّاد + انتقالات بشريط ضوئي. مناسب لـ 16:9 و 9:16.
+# =====================================================================
+import math
+import random
+import numpy as np
+
+
+def _ease_out(x):
+    x = min(max(x, 0.0), 1.0)
+    return 1 - (1 - x) ** 3
+
+
+def _ease_in(x):
+    x = min(max(x, 0.0), 1.0)
+    return x ** 3
+
+
+def _ease_back(x):
+    x = min(max(x, 0.0), 1.0)
+    c1, c3 = 1.2, 2.2
+    return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2
+
+
+def _lut(f):
+    f = min(max(f, 0.0), 1.0)
+    return [int(i * f) for i in range(256)]
+
+
+class _Layer:
+    """طبقة RGBA جاهزة للّصق بشفافية متغيرة"""
+    def __init__(self, rgba):
+        self.w, self.h = rgba.size
+        self.rgb = rgba.convert("RGB")
+        self.alpha = rgba.getchannel("A")
+
+    def put(self, frame, x, y, opacity=1.0):
+        if opacity <= 0.01:
+            return
+        a = self.alpha if opacity >= 0.99 else self.alpha.point(_lut(opacity))
+        frame.paste(self.rgb, (int(x), int(y)), a)
+
+
+def _text_layer(text, font, fill, pad=14, shadow=True):
+    tmp = PIL.Image.new("RGBA", (8, 8))
+    d = ImageDraw.Draw(tmp)
+    tw, th = text_size(d, text, font)
+    w, h = tw + pad * 2 + 6, th + pad * 2 + 6
+    img = PIL.Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if shadow:
+        draw_anchored(d, (w / 2 + 3, pad + 3), text, font, (0, 0, 0, 170), anchor="ma")
+    draw_anchored(d, (w / 2, pad), text, font, fill + (255,), anchor="ma")
+    return _Layer(img)
+
+
+def _glow_sprite(size, color, strength):
+    yy, xx = np.mgrid[0:size, 0:size]
+    r = np.sqrt((xx - size / 2) ** 2 + (yy - size / 2) ** 2) / (size / 2)
+    a = np.clip(1 - r, 0, 1) ** 2 * strength
+    rgba = np.zeros((size, size, 4), dtype=np.uint8)
+    rgba[..., 0], rgba[..., 1], rgba[..., 2] = color
+    rgba[..., 3] = (a * 255).astype(np.uint8)
+    return _Layer(PIL.Image.fromarray(rgba, "RGBA"))
+
+
+class AnimatedScene:
+    """يبني فيديو كامل: (مقدمة) + شرائح متحركة + (خاتمة) كدالة زمن → إطار"""
+
+    def __init__(self, slide_texts, durations, width, height, is_shorts,
+                 title="", kicker="", date_str="", intro=0.0, outro=0.0):
+        ensure_fonts()
+        self.W, self.H = width, height
+        self.is_shorts = is_shorts
+        self.title, self.kicker, self.date_str = title, kicker, date_str
+        self.intro, self.outro = intro, outro
+        self.texts = list(slide_texts)
+        self.n = len(self.texts)
+        self.durs = list(durations)
+        self.starts = []
+        t = intro
+        for d in self.durs:
+            self.starts.append(t)
+            t += d
+        self.content_end = t
+        self.total = t + outro
+        self.rng = random.Random(7)
+        base = _bg_navy(width, height)
+        # تدرج رأسي خفيف يعطي عمق
+        arr = np.asarray(base).astype(np.float32)
+        grad = np.linspace(1.12, 0.78, height, dtype=np.float32)[:, None, None]
+        self.bg = PIL.Image.fromarray(np.clip(arr * grad, 0, 255).astype(np.uint8))
+        s = int(max(width, height) * 0.75)
+        self.glow_gold = _glow_sprite(s, BRAND["gold"], 0.20)
+        self.glow_blue = _glow_sprite(s, (40, 90, 170), 0.32)
+        self._build_stripes()
+        self.particles = [(self.rng.random(), self.rng.random(),
+                           self.rng.uniform(0.02, 0.07), self.rng.uniform(2, 5),
+                           self.rng.random() * 6.28) for _ in range(26 if not is_shorts else 20)]
+        self.chip = None
+        self._cache = {}
+        self.u = height / 1080.0 if not is_shorts else width / 1080.0
+
+    def _build_stripes(self):
+        W, H = self.W, self.H
+        self.period = int(max(W, H) * 0.16)
+        img = PIL.Image.new("RGBA", (W + self.period, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        for x in range(-H, W + self.period, self.period):
+            d.line([(x, H), (x + H * 0.6, 0)], fill=BRAND["gold"] + (22,), width=max(2, H // 400))
+        self.stripes = _Layer(img)
+
+    # ---------- مكونات ----------
+    def _draw_background(self, frame, t):
+        W, H = self.W, self.H
+        a = t * 0.35
+        self.glow_blue.put(frame, W * (0.2 + 0.15 * math.sin(a)) - self.glow_blue.w / 2,
+                           H * (0.25 + 0.12 * math.cos(a * 1.3)) - self.glow_blue.h / 2)
+        self.glow_gold.put(frame, W * (0.82 + 0.1 * math.cos(a * 0.9)) - self.glow_gold.w / 2,
+                           H * (0.78 + 0.1 * math.sin(a * 1.1)) - self.glow_gold.h / 2)
+        self.stripes.put(frame, -((t * 22) % self.period), 0, 1.0)
+        d = ImageDraw.Draw(frame)
+        for px, py, sp, r, ph in self.particles:
+            y = (py - t * sp) % 1.0
+            x = px + 0.015 * math.sin(t * 0.8 + ph)
+            tw = 0.5 + 0.5 * math.sin(t * 2 + ph)
+            rr = r * self.u * (0.8 + 0.4 * tw)
+            c = int(90 + 120 * tw)
+            d.ellipse([x * W - rr, y * H - rr, x * W + rr, y * H + rr],
+                      fill=(min(255, c + 100), min(255, c + 60), 70))
+
+    def _frame_chrome(self, frame, t):
+        """شارة القناة + إطار ذهبي نابض"""
+        W, H = self.W, self.H
+        d = ImageDraw.Draw(frame)
+        _gold_frame(d, W, H)
+        if self.chip is None:
+            f = get_font(int(H * 0.030 if not self.is_shorts else W * 0.034), bold=True)
+            tmp = PIL.Image.new("RGBA", (8, 8))
+            cw, ch = text_size(ImageDraw.Draw(tmp), CHANNEL_NAME_AR, f)
+            px, py = int(W * 0.014), int(H * 0.008)
+            w, h = cw + px * 2 + 8, ch + py * 2 + 8
+            img = PIL.Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            dd = ImageDraw.Draw(img)
+            dd.rounded_rectangle([(1, 1), (w - 2, h - 2)], radius=h // 2,
+                                 fill=BRAND["navy_dark"] + (255,), outline=BRAND["gold"],
+                                 width=max(2, H // 450))
+            draw_anchored(dd, (w - px - 4, py + 4), CHANNEL_NAME_AR, f, BRAND["gold"], anchor="ra")
+            self.chip = _Layer(img)
+        self.chip.put(frame, W - int(W * 0.045) - self.chip.w, int(H * 0.045))
+
+    def _timeline(self, frame, t):
+        W, H = self.W, self.H
+        d = ImageDraw.Draw(frame)
+        y = int(H * 0.925)
+        x_r, x_l = W * 0.88, W * 0.12            # يمين ← يسار (اتجاه القراءة العربي)
+        lw = max(4, H // 200)
+        d.rounded_rectangle([x_l, y - lw / 2, x_r, y + lw / 2], radius=lw / 2,
+                            fill=(35, 55, 90))
+        span = max(self.content_end - self.intro, 0.1)
+        prog = min(max((t - self.intro) / span, 0), 1)
+        xp = x_r - (x_r - x_l) * prog
+        d.rounded_rectangle([xp, y - lw / 2, x_r, y + lw / 2], radius=lw / 2, fill=BRAND["gold"])
+        r0 = max(5, int(H * 0.0075))
+        for i, st in enumerate(self.starts):
+            fx = x_r - (x_r - x_l) * ((st - self.intro) / span)
+            done = t >= st
+            cur = st <= t < st + self.durs[i]
+            r = r0 * (1.6 + 0.35 * math.sin(t * 6)) if cur else r0
+            d.ellipse([fx - r, y - r, fx + r, y + r],
+                      fill=BRAND["gold"] if done else (35, 55, 90),
+                      outline=BRAND["white"] if cur else BRAND["gold"], width=2)
+        # العدّاد
+        total = self.n
+        idx = max(1, min(self.n, 1 + sum(1 for s in self.starts if s <= t) - 1)) if self.n else 1
+        counter = f"{_to_arabic_digits(idx)} / {_to_arabic_digits(total)}"
+        f = get_font(int(H * 0.026 if not self.is_shorts else W * 0.032), bold=True)
+        draw_anchored(d, (int(W * 0.06), int(H * 0.052)), counter, f, BRAND["gray"], anchor="la")
+
+    def _slide_layers(self, i):
+        if i in self._cache:
+            return self._cache[i]
+        W, H = self.W, self.H
+        text = self.texts[i]
+        tmp = PIL.Image.new("RGBA", (8, 8))
+        d = ImageDraw.Draw(tmp)
+        card_w = int(W * (0.86 if not self.is_shorts else 0.88))
+        card_h = int(H * (0.56 if not self.is_shorts else 0.50))
+        start = int((H if not self.is_shorts else W * 1.4) * 0.07)
+        while True:
+            font, lines = _fit_font(d, text, start, int(card_w * 0.84),
+                                    5 if not self.is_shorts else 8, int(H * 0.026))
+            lh = [text_size(d, ln, font)[1] + 34 for ln in lines]
+            need = sum(lh) + int(font.size * 0.22) * (len(lines) - 1)
+            if need <= card_h * 0.86 or start <= int(H * 0.028):
+                break
+            start = int(start * 0.9)
+        # بطاقة زجاجية
+        card = PIL.Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
+        cd = ImageDraw.Draw(card)
+        cd.rounded_rectangle([(0, 0), (card_w - 1, card_h - 1)], radius=int(H * 0.025),
+                             fill=(8, 22, 45, 215), outline=BRAND["gold"] + (255,),
+                             width=max(3, H // 330))
+        bar_w = max(8, int(card_w * 0.012))
+        side = i % 3
+        cd.rounded_rectangle([(card_w - bar_w - 18, 22), (card_w - 18, card_h - 22)],
+                             radius=bar_w // 2, fill=BRAND["gold"] + (255,)) if side != 1 else \
+            cd.rounded_rectangle([(18, 22), (18 + bar_w, card_h - 22)],
+                                 radius=bar_w // 2, fill=BRAND["gold"] + (255,))
+        line_layers = [_text_layer(ln, font, BRAND["white"]) for ln in lines]
+        gap = int(font.size * 0.22)
+        total_h = sum(l.h for l in line_layers) + gap * (len(line_layers) - 1)
+        y = (card_h - total_h) // 2
+        positions = []
+        for l in line_layers:
+            positions.append(((card_w - l.w) // 2, y))
+            y += l.h + gap
+        ghost_font = get_font(int(H * (0.55 if not self.is_shorts else 0.30)), bold=True)
+        ghost = _text_layer(_to_arabic_digits(i + 1), ghost_font, BRAND["gold"], shadow=False)
+        ghost.alpha = ghost.alpha.point(_lut(0.07))
+        kf = get_font(int(H * 0.034 if not self.is_shorts else W * 0.04), bold=True)
+        kick = _text_layer(self.kicker, kf, BRAND["gold"], shadow=False) if self.kicker else None
+        out = dict(card=_Layer(card), lines=line_layers, pos=positions, ghost=ghost,
+                   kick=kick, card_w=card_w, card_h=card_h)
+        # حذف الشرائح القديمة لتوفير الذاكرة
+        for k in [k for k in self._cache if isinstance(k, int) and k < i - 1]:
+            del self._cache[k]
+        self._cache[i] = out
+        return out
+
+    def _draw_slide(self, frame, i, t):
+        W, H = self.W, self.H
+        lt = t - self.starts[i]
+        dur = self.durs[i]
+        L = self._slide_layers(i)
+        side = i % 3
+        tin, tout = 0.65, 0.4
+        pin = _ease_out(lt / tin)
+        pout = _ease_in((lt - (dur - tout)) / tout)
+        cx = (W - L["card_w"]) / 2
+        cy = H * (0.50 if not self.is_shorts else 0.47) - L["card_h"] / 2
+        travel = W * 0.35
+        if side == 0:
+            dx, dy = (1 - pin) * travel - pout * travel, 0
+        elif side == 1:
+            dx, dy = -(1 - pin) * travel + pout * travel, 0
+        else:
+            dx, dy = 0, (1 - _ease_back(lt / tin)) * H * 0.25 + pout * H * 0.15
+        op = min(pin * 1.4, 1.0) * (1 - pout)
+        # رقم شبحي كبير خلف الكارت
+        gx = W * (0.5 if self.is_shorts else 0.14) - L["ghost"].w / 2 + (1 - pin) * 80 - pout * 80
+        L["ghost"].put(frame, gx, H * 0.5 - L["ghost"].h / 2, op)
+        L["card"].put(frame, cx + dx, cy + dy, op)
+        for k, (ll, (lx, ly)) in enumerate(zip(L["lines"], L["pos"])):
+            lp = _ease_out((lt - 0.25 - 0.14 * k) / 0.5)
+            lo = lp * (1 - pout)
+            ll.put(frame, cx + dx + lx, cy + dy + ly + (1 - lp) * H * 0.04, lo)
+        # كيكر + خط ذهبي يتمدد
+        if L["kick"] is not None:
+            ky = cy - L["kick"].h - H * 0.035
+            L["kick"].put(frame, (W - L["kick"].w) / 2, ky, op)
+            d = ImageDraw.Draw(frame)
+            wl = (W * 0.16) * _ease_out((lt - 0.2) / 0.6) * (1 - pout)
+            d.rectangle([W / 2 - wl, ky + L["kick"].h + 2, W / 2 + wl,
+                         ky + L["kick"].h + 2 + max(3, H // 330)], fill=BRAND["gold"])
+        # شريط الانتقال الضوئي عند بداية كل شريحة
+        if i > 0 and lt < 0.55:
+            sx = W * (1.15 - 1.3 * (lt / 0.55))
+            band = PIL.Image.new("RGB", (int(W * 0.10), H), BRAND["gold"])
+            mask = PIL.Image.linear_gradient("L").rotate(90).resize((band.width, H))
+            mask = mask.point(lambda v: int((255 - abs(v - 127) * 2) * 0.35))
+            frame.paste(band, (int(sx), 0), mask)
+
+    def _draw_intro(self, frame, t):
+        W, H = self.W, self.H
+        c = self._cache.get("intro")
+        if c is None:
+            d = ImageDraw.Draw(PIL.Image.new("RGBA", (8, 8)))
+            hf = get_font(int(H * 0.075), bold=True)
+            head = _text_layer(CHANNEL_NAME_AR, hf, BRAND["gold"])
+            ef = get_font(int(H * 0.026), bold=False)
+            en = _text_layer(CHANNEL_NAME_EN, ef, BRAND["gray"], shadow=False)
+            font, lines = _fit_font(d, self.title, int(H * 0.085), int(W * 0.82), 3, int(H * 0.036))
+            tl = [_text_layer(ln, font, BRAND["white"]) for ln in lines]
+            df = get_font(int(H * 0.03), bold=False)
+            date = _text_layer(self.date_str, df, BRAND["gold"], shadow=False) if self.date_str else None
+            c = self._cache["intro"] = (head, en, tl, date)
+        head, en, tl, date = c
+        s = _ease_back(t / 0.7)
+        head.put(frame, (W - head.w) / 2, H * 0.11 + (1 - s) * -H * 0.08, min(t / 0.5, 1))
+        en.put(frame, (W - en.w) / 2, H * 0.11 + head.h + 4, min(max(t - 0.3, 0) / 0.5, 1))
+        d = ImageDraw.Draw(frame)
+        ly = H * 0.30
+        wl = W * 0.17 * _ease_out((t - 0.3) / 0.8)
+        d.rectangle([W / 2 - wl, ly, W / 2 + wl, ly + max(3, H // 300)], fill=BRAND["gold"])
+        total_h = sum(l.h for l in tl)
+        y = H * 0.38 + (H * 0.38 - total_h) / 2
+        for k, l in enumerate(tl):
+            p = _ease_out((t - 0.6 - 0.25 * k) / 0.6)
+            l.put(frame, (W - l.w) / 2 + (1 - p) * W * 0.12, y, p)
+            y += l.h
+        if date is not None:
+            date.put(frame, (W - date.w) / 2, H * 0.86, min(max(t - 1.4, 0) / 0.6, 1))
+
+    def _draw_outro(self, frame, t):
+        W, H = self.W, self.H
+        c = self._cache.get("outro")
+        if c is None:
+            f1 = get_font(int(H * 0.085), bold=True)
+            f2 = get_font(int(H * 0.042), bold=False)
+            c = self._cache["outro"] = (
+                _text_layer("اشترك في القناة", f1, BRAND["gold"]),
+                _text_layer("وفعل الجرس عشان يوصلك كل جديد أول بأول", f2, BRAND["white"]),
+                _text_layer(CHANNEL_NAME_AR, get_font(int(H * 0.05), bold=True), BRAND["gold"]))
+        a, b, ch = c
+        p1 = _ease_back(t / 0.7)
+        a.put(frame, (W - a.w) / 2, H * 0.30 + (1 - p1) * H * 0.12, min(t / 0.4, 1))
+        b.put(frame, (W - b.w) / 2, H * 0.30 + a.h + H * 0.03, min(max(t - 0.4, 0) / 0.6, 1))
+        pulse = 1 + 0.04 * math.sin(t * 5)
+        d = ImageDraw.Draw(frame)
+        cx, cy = W / 2, H * 0.72
+        rw, rh = ch.w * 0.62 * pulse, ch.h * 0.75 * pulse
+        d.rounded_rectangle([cx - rw, cy - rh, cx + rw, cy + rh], radius=int(rh),
+                            outline=BRAND["gold"], width=max(3, H // 350))
+        ch.put(frame, cx - ch.w / 2, cy - ch.h / 2, min(max(t - 0.7, 0) / 0.5, 1))
+
+    # ---------- الإطار ----------
+    def frame_at(self, t):
+        t = min(max(t, 0.0), self.total - 1e-3)
+        frame = self.bg.copy()
+        self._draw_background(frame, t)
+        if t < self.intro:
+            self._draw_intro(frame, t)
+        elif t >= self.content_end:
+            self._draw_outro(frame, t - self.content_end)
+        else:
+            i = max(k for k, s in enumerate(self.starts) if s <= t)
+            self._draw_slide(frame, i, t)
+            self._timeline(frame, t)
+        self._frame_chrome(frame, t)
+        return np.asarray(frame)
+
+
+def build_animated_clip(slide_texts, durations, width, height, is_shorts,
+                        title="", kicker="", date_str="", intro=0.0, outro=0.0):
+    """يرجع (VideoClip, المدة الكلية)"""
+    from moviepy.editor import VideoClip
+    scene = AnimatedScene(slide_texts, durations, width, height, is_shorts,
+                          title=title, kicker=kicker, date_str=date_str,
+                          intro=intro, outro=outro)
+    return VideoClip(scene.frame_at, duration=scene.total), scene.total
