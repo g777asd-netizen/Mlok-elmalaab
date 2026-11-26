@@ -6,7 +6,7 @@ script_review.py - مراجعة ثانية بـ Gemini قبل الصوت
 """
 import os
 
-REVIEW_MODEL = os.environ.get("GEMINI_REVIEW_MODEL", "gemini-2.5-flash")
+from llm_utils import gemini_text
 
 REVIEW_SYSTEM = (
  "أنت مدقق لغوي ومعلق كروي مصري قاهري خبير. هتاخد تعليق صوتي لفيديو كرة قدم ومعاه نص الخبر الأصلي. "
@@ -28,15 +28,12 @@ def gemini_review(script, source_text, label=""):
         print("ℹ️ مراجعة Gemini متخطية (مفيش GEMINI_API_KEY)")
         return script
     try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=key)
-        resp = client.models.generate_content(
-            model=REVIEW_MODEL,
-            contents="النص الأصلي للخبر (مرجع للحقائق والأسماء):\n" + source_text[:3000] + "\n\nالتعليق المطلوب تصحيحه:\n" + script,
-            config=types.GenerateContentConfig(system_instruction=REVIEW_SYSTEM, temperature=0.2, max_output_tokens=6000),
-        )
-        out = (resp.text or "").strip()
+        out = gemini_text(REVIEW_SYSTEM,
+                          "النص الأصلي للخبر (مرجع للحقائق والأسماء):\n" + source_text[:3000] + "\n\nالتعليق المطلوب تصحيحه:\n" + script,
+                          temperature=0.2, max_tokens=6000, label=label)
+        if not out:
+            print(f"⚠️ مراجعة Gemini {label}: كل الموديلات فشلت، هكمل بالنص زي ما هو")
+            return script
         if len(out) < 0.7 * len(script) or len(out) > 1.4 * len(script):
             print(f"⚠️ مراجعة Gemini {label}: الناتج غير منطقي الطول، هتجاهله")
             return script
