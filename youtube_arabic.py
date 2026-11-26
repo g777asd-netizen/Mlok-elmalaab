@@ -33,9 +33,13 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from moviepy.editor import VideoFileClip, AudioFileClip, ImageClip, CompositeVideoClip
+from moviepy.editor import (VideoFileClip, AudioFileClip, ImageClip,
+                            CompositeVideoClip, concatenate_videoclips)
 from groq import Groq
 import edge_tts
+from branding import (create_brand_overlay, create_intro_card, create_outro_card,
+                      ensure_fonts, enhance_image)
+from gemini_voice import generate_voice
 
 # ====================== المتغيرات البيئة والإعدادات ======================
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
@@ -47,7 +51,7 @@ VIDEO_WIDTH = 1920
 VIDEO_HEIGHT = 1080
 SHORTS_WIDTH = 1080
 SHORTS_HEIGHT = 1920
-FPS = 24
+FPS = 30
 HISTORY_FILE = "history.json"
 SOURCE_INDEX_FILE = "source_index.json"
 FAILED_LINKS_FILE = "failed_links.json"
@@ -529,7 +533,7 @@ def generate_ai_content(article):
     
     prompt = f"""
 أنت محلل رياضي محترف ومعلق كروي خبير.
-سأعطيك خبر رياضي، مطلوب منك إنشاء محتوى احترافي باللغة العربية الفصحى.
+سأعطيك خبر رياضي، مطلوب منك إنشاء محتوى بالعامية المصرية بأسلوب معلق كروي شعبي طبيعي.
 
 النص الأصلي:
 العنوان: {article['title']}
@@ -539,7 +543,9 @@ def generate_ai_content(article):
 1. لا تخترع أي معلومات غير موجودة في النص الأصلي إطلاقاً
 2. استخدم التفاصيل الموجودة في النص دون حشو
 3. اقرأ الخبر كاملاً وأعد صياغته بأسلوب احترافي
-4. اكتب بأسلوب سردي تحليلي غني بالمفردات العربية الفصحى
+4. اكتب بأسلوب معلق كروي مصري شعبي (عامية مصرية أصيلة) كأنك بتحكي لصاحبك، بجمل قصيرة وحيوية
+   - اكتب أسماء اللاعبين والأندية الأجنبية بالنطق المصري المتداول (بيلينجهام مش بيلينغهام، جولر مش غولر)
+   - اكتب الأرقام بالكلمات مش بالأرقام عشان التعليق الصوتي ينطقها صح
 5. النص يجب أن يكون متوسط الطول (700-900 كلمة) لتغطية 3-4 دقائق
 6. البنية المطلوبة:
    - Hook: جملة افتتاحية قوية جداً تجذب المشاهد فوراً
@@ -589,7 +595,7 @@ def generate_ai_content(article):
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a helpful assistant that outputs strictly valid JSON. You write in professional Arabic Fusha (فصحى). Never invent information not in the source."
+                        "content": "You are a helpful assistant that outputs strictly valid JSON. You write scripts in Egyptian colloquial Arabic (عامية مصرية) like a popular football commentator. Titles, descriptions and hashtags stay in standard Arabic for SEO. Never invent information not in the source."
                     },
                     {
                         "role": "user",
@@ -669,105 +675,22 @@ def generate_ai_content(article):
 
 # ====================== توليد الصوت ======================
 async def generate_audio(text, output_file):
-    """توليد الصوت باستخدام Edge TTS - صوت شاكر المصري بالفصحى"""
-    voice = "ar-EG-ShakirNeural"
-    rate = "-5%"
-    
-    communicate = edge_tts.Communicate(text, voice, rate=rate)
-    await communicate.save(output_file)
-    
-    print(f"✅ تم توليد الصوت: {output_file}")
+    """توليد الصوت: Gemini TTS بأسلوب التعليق المصري الطبيعي (صوت Charon)،
+    ومع edge-tts (شاكر) كخطة بديلة تلقائية لو المفتاح غير موجود أو فشل التوليد"""
+    engine = await generate_voice(text, output_file)
+    print(f"✅ تم توليد الصوت [{engine}]: {output_file}")
     return output_file
 
 
 # ====================== إنشاء إطار الأخبار ======================
 def create_news_overlay(width, height):
-    """إنشاء إطار الأخبار الاحترافي"""
-    img = PIL.Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    
-    bar_height = int(height * 0.12)
-    bar_y = height - bar_height
-    
-    draw.rectangle([(0, bar_y), (width, height)], fill=(200, 0, 0, 230))
-    draw.rectangle([(0, bar_y), (width, bar_y + 5)], fill=(255, 215, 0, 255))
-    
-    font = None
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-        "C:\\Windows\\Fonts\\arialbd.ttf",
-        "arialbd.ttf"
-    ]
-    
-    for path in font_paths:
-        try:
-            font = ImageFont.truetype(path, int(height * 0.04))
-            break
-        except Exception as e:
-            continue
-    
-    if not font:
-        font = ImageFont.load_default()
-    
-    text = f"{CHANNEL_NAME_AR} | {CHANNEL_NAME_EN}"
-    
-    try:
-        text_bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = text_bbox[2] - text_bbox[0]
-        text_height = text_bbox[3] - text_bbox[1]
-    except Exception as e:
-        text_width = len(text) * 20
-        text_height = 40
-    
-    text_x = (width - text_width) / 2
-    text_y = bar_y + (bar_height - text_height) / 2 - 5
-    
-    draw.text((text_x, text_y), text, font=font, fill=(255, 255, 255, 255))
-    
-    badge_width = int(width * 0.13)
-    badge_height = int(height * 0.05)
-    badge_x = width - badge_width - 10
-    badge_y = bar_y - badge_height - 10
-    
-    draw.rectangle([(badge_x, badge_y), (width - 10, bar_y - 10)], fill=(255, 255, 255, 255))
-    
-    badge_font = None
-    for path in font_paths:
-        try:
-            badge_font = ImageFont.truetype(path, int(height * 0.03))
-            break
-        except Exception as e:
-            continue
-    
-    if not badge_font:
-        badge_font = font
-    
-    badge_text = "عاجل"
-    
-    try:
-        badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
-        badge_text_width = badge_bbox[2] - badge_bbox[0]
-        badge_text_height = badge_bbox[3] - badge_bbox[1]
-    except Exception as e:
-        badge_text_width = 60
-        badge_text_height = 30
-    
-    badge_text_x = badge_x + (badge_width - badge_text_width) / 2
-    badge_text_y = badge_y + (badge_height - badge_text_height) / 2
-    
-    draw.text((badge_text_x, badge_text_y), badge_text, font=badge_font, fill=(200, 0, 0, 255))
-    
-    overlay_path = f"overlay_{width}x{height}.png"
-    img.save(overlay_path)
-    
-    return overlay_path
+    """الإطار الموحد للهوية البصرية (كحلي/ذهبي مع خط Cairo) — التفاصيل في branding.py"""
+    return create_brand_overlay(width, height)
 
 
 # ====================== إنشاء الفيديو مع Zoom ======================
-def create_zooming_video(image_path, audio_path, output_path, width, height, is_shorts):
-    """إنشاء فيديو مع تأثير الزوم"""
+def create_zooming_video(image_path, audio_path, output_path, width, height, is_shorts, title=None):
+    """إنشاء فيديو بجودة عالية مع تأثير الزوم + بطاقة افتتاحية وختامية بالهوية البصرية"""
     try:
         video_type = "شورتس" if is_shorts else "فيديو"
         print(f"🎬 جاري المونتاج ({video_type})...")
@@ -809,24 +732,42 @@ def create_zooming_video(image_path, audio_path, output_path, width, height, is_
                         .set_duration(duration)
                         .set_position(("center", "top")))
         
-        final = CompositeVideoClip(
+        main_segment = CompositeVideoClip(
             [zoomed_bg, overlay_clip],
             size=(width, height)
         ).set_audio(audio)
+        
+        # بطاقات الافتتاح والختام للفيديو الطويل فقط (الشورتس يبدأ بالخبر مباشرة)
+        intro_path = None
+        outro_path = None
+        clips = [main_segment]
+        if not is_shorts:
+            date_str = datetime.now().strftime("%Y/%m/%d")
+            intro_path = create_intro_card(title or CHANNEL_NAME_AR, "intro_card.png", width, height, date_str)
+            outro_path = create_outro_card("outro_card.png", width, height)
+            clips = ([ImageClip(intro_path).set_duration(3.0)]
+                     + clips
+                     + [ImageClip(outro_path).set_duration(3.5)])
+        
+        final = concatenate_videoclips(clips, method="compose")
         
         final.write_videofile(
             output_path,
             fps=FPS,
             codec="libx264",
             audio_codec="aac",
-            preset="medium",
+            audio_bitrate="192k",
+            bitrate="8000k",
+            preset="slow",
             threads=4,
+            ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
             verbose=False,
             logger=None
         )
         
-        if os.path.exists(overlay_path):
-            os.remove(overlay_path)
+        for tmp in (overlay_path, intro_path, outro_path):
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
         
         print(f"✅ تم إنشاء {video_type}: {output_path}")
         return True
@@ -874,7 +815,9 @@ def upload_to_youtube(video_path, title, description, tags, is_shorts):
         final_title = title + " #Shorts"
     
     hashtags_str = " ".join(tags)
-    full_description = f"{description}\n\n{hashtags_str}"
+    full_description = (f"{description}\n\n"
+                        "📢 ملحوظة: التعليق الصوتي في هذا الفيديو مولّد بتقنية الذكاء الاصطناعي.\n\n"
+                        f"{hashtags_str}")
     
     clean_tags = []
     for t in tags:
@@ -995,6 +938,8 @@ async def main():
     print(f"📊 عدد المصادر: {len(SOURCES)}")
     print("=" * 60)
     
+    ensure_fonts()
+    
     article = find_best_news()
     if not article:
         print("😴 لم يتم العثور على أخبار كروية جديدة في هذا المصدر.")
@@ -1030,6 +975,7 @@ async def main():
         print("❌ فشل تحميل الصورة")
         save_failed_link(article['url'], article['source_name'], "فشل تحميل صورة الخبر")
         return
+    enhance_image(img_file)
     
     print("\n🎙️ توليد الصوت للفيديو الطويل...")
     await generate_audio(ai['video_script'], video_audio)
@@ -1044,7 +990,8 @@ async def main():
         video_file,
         VIDEO_WIDTH,
         VIDEO_HEIGHT,
-        is_shorts=False
+        is_shorts=False,
+        title=ai['video_title']
     )
     
     print("\n🎬 إنتاج الشورتس...")
@@ -1054,7 +1001,8 @@ async def main():
         shorts_file,
         SHORTS_WIDTH,
         SHORTS_HEIGHT,
-        is_shorts=True
+        is_shorts=True,
+        title=ai['shorts_title']
     )
     
     if video_success:
