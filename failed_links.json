@@ -22,5 +22,29 @@
         "source": "Google Trends مصر",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-26 10:59:19"
+    },
+    {
+        "link": "https://www.yardbarker.com/soccer/players/pierre_emerick_aubameyang/933528",
+        "source": "Yardbarker",
+        "reason": "فشل استخراج المحتوى / المحتوى قصير",
+        "failed_at": "2026-11-26 15:01:03"
+    },
+    {
+        "link": "https://www.yardbarker.com/soccer/players/antonio_nusa/934210",
+        "source": "Yardbarker",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-26 15:01:03"
+    },
+    {
+        "link": "https://www.yardbarker.com/soccer/teams/nottingham_forest/17566",
+        "source": "Yardbarker",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-26 15:01:04"
+    },
+    {
+        "link": "https://www.yardbarker.com/soccer/teams/liverpool_fc/17441",
+        "source": "Yardbarker",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-26 15:04:03"
     }
 ]
