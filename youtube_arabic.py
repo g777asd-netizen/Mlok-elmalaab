@@ -1183,6 +1183,11 @@ async def main():
         something_uploaded = something_uploaded or shorts_ok
         if not shorts_ok:
             save_failed_link(payload['url'], payload['source_name'], "فشل رفع الشورتس لليوتيوب")
+        try:
+            from tiktok_buffer import post_short_to_tiktok
+            post_short_to_tiktok(shorts_file, ai['shorts_title'], ai['hashtags'])
+        except Exception as _e:
+            print(f"⚠️ تيكتوك: {_e}")
 
     if video_success or shorts_success:
         print("\n💾 حفظ الموضوع في الهيستوري (منع التكرار)...")
