@@ -179,7 +179,7 @@ def prepare_for_speech(text):
     return respell_names(text)
 
 
-def script_problems(script, source_text):
+def script_problems(script, source_text, check_names=False):
     """قائمة مشاكل. لو مش فاضية: أعد التوليد (موديل تاني) بدل النشر."""
     probs = []
     if re.search(r"\d", script):
@@ -194,9 +194,46 @@ def script_problems(script, source_text):
         probs.append("لهجة مش مصرية كفاية، بقايا: " + "، ".join(left[:6]))
     if re.search(r"(\S+)\s+\1\s+\1", script):
         probs.append("تكرار كلمة ثلاث مرات ورا بعض")
-    src = _norm_key(source_text)
-    pat = "(?:المدرب|اللاعب|مدرب|لاعب)\\s+([" + AR_LET + "]{3,})\\s+([" + AR_LET + "]{3,})"
-    for m in re.finditer(pat, script):
-        if _norm_key(m[1]) not in src:
-            probs.append("اسم مش في المصدر: " + m[1] + " " + m[2])
+    if check_names:
+        for sent, nm in suspicious_name_sentences(script, source_text):
+            probs.append("اسم مش في المصدر: " + nm)
     return probs
+
+
+# كلمات عادية بتيجي بعد (اللاعب/المدرب) وملهاش علاقة باسم شخص
+COMMON_NOT_NAMES = set("""رئيسي سنة سنه موسم الموسم هذا هذه ده دي اللي الذي التي كان كانت كل بعد قبل مع في من على الى إلى عن
+أول اول تاني ثاني ثالث جديد جديدة كبير كبيرة صغير الشاب الكبير الجديد الاول الأول الأفضل الافضل الوحيد الاساسي الأساسي
+يوم امبارح انهارده النهاردة دايما دايماً بس لسه لسة قدام ورا عشان علشان لكن ولا وكمان كمان برضه برضو
+الفريق الفرقة الدوري الماتش المباراة المباريات الجون الهدف النادي الاتحاد الاتحادية الكرة الملعب
+يقدم قدم يلعب لعب سجل يسجل جاب يجيب بيلعب بيقدم هيلعب هيقدم مش ما لا""".split())
+
+TITLE_WORDS = ("المدرب", "اللاعب", "مدرب", "لاعب")
+
+
+def suspicious_name_sentences(script, source_text):
+    """جمل فيها (لاعب/مدرب + اسمين) والاسمين الاتنين مش في المصدر ومش كلمات عادية.
+    فلتر متساهل: بيتجاهل الكلمات الشائعة وبيكتفي بتحذير لما الاسمين كلهم مش موجودين في الخبر."""
+    src = _norm_key(source_text)
+    pat = "(?:" + "|".join(TITLE_WORDS) + ")\\s+([" + AR_LET + "]{3,})\\s+([" + AR_LET + "]{3,})"
+    out = []
+    for sent in re.split(r"(?<=[\.!\?؟])\s+", script):
+        for m in re.finditer(pat, sent):
+            w1, w2 = _norm_key(m[1]), _norm_key(m[2])
+            if w1 in COMMON_NOT_NAMES or w2 in COMMON_NOT_NAMES:
+                continue
+            if w1 in src or w2 in src:
+                continue
+            out.append((sent, m[1] + " " + m[2]))
+    return out
+
+
+def drop_suspicious_sentences(script, source_text):
+    """بدل ما نرفض السكريبت: نشيل الجملة المشبوهة بس (لو فضل نص كفاية)."""
+    bad = {s for s, _ in suspicious_name_sentences(script, source_text)}
+    if not bad:
+        return script, []
+    sents = re.split(r"(?<=[\.!\?؟])\s+", script)
+    kept = [s for s in sents if s not in bad]
+    if len(" ".join(kept)) < 0.6 * len(script):
+        return script, []
+    return " ".join(kept), list(bad)
