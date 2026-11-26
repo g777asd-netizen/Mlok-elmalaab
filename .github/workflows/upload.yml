@@ -8,6 +8,17 @@ on:
     - cron: '0 10,15,19 * * *'    # 12:00 و 17:00 و 21:00 القاهرة
     - cron: '30 21 * * *'         # 23:30 القاهرة (بعد المباريات المسائية)
   workflow_dispatch:
+    inputs:
+      url:
+        description: 'رابط (مقال / يوتيوب / بوست سوشيال / رابط مختصر) - اختياري'
+        required: false
+        default: ''
+        type: string
+      keyword:
+        description: 'كلمة مفتاحية للبحث عن خبر - اختياري (الرابط له الأولوية)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -40,7 +51,7 @@ jobs:
         pip install --upgrade pip
         pip install requests beautifulsoup4 Pillow numpy
         pip install moviepy==1.0.3
-        pip install edge-tts groq
+        pip install edge-tts groq yt-dlp googlenewsdecoder
         pip install google-genai arabic-reshaper python-bidi
         pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
 
@@ -51,6 +62,9 @@ jobs:
         FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
         FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        MANUAL_URL: ${{ github.event.inputs.url }}
+        MANUAL_KEYWORD: ${{ github.event.inputs.keyword }}
         GEMINI_TTS_MODEL: gemini-2.5-flash-preview-tts
         GEMINI_TTS_VOICE: Charon
       run: python youtube_arabic.py
