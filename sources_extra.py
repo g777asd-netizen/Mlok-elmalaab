@@ -452,9 +452,23 @@ def extract_from_url(raw):
     video = _is(url, YT_HOSTS)
     title, text, kind = '', '', 'article'
 
-    if video or social:
-        kind = 'video' if video else 'social'
-        print(f"   🎥 نوع الرابط: {'فيديو يوتيوب' if video else 'بوست/فيديو سوشيال'}")
+    if video:
+        kind = 'video'
+        print("   🎥 نوع الرابط: فيديو يوتيوب")
+        import yt_transcript
+        oe = _oembed(url)
+        try:
+            yt = yt_transcript.get_youtube_text(url, (oe or {}).get('title', ''))
+        except yt_transcript.TranscriptError as e:
+            raise ExtractError(str(e))
+        title = yt['title']
+        text = "نص الكلام في الفيديو (من الفيديو نفسه):\n" + yt['text']
+        if yt['description'] and len(yt['description']) > 200:
+            text += "\nوصف الفيديو: " + yt['description']
+        kind = 'video'
+    elif social:
+        kind = 'social'
+        print("   🎥 نوع الرابط: بوست/فيديو سوشيال")
         parts = []
         info = _ytdlp_info(url)
         if info:
