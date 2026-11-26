@@ -40,7 +40,8 @@ from groq import Groq
 from branding import (create_thumbnail, ensure_fonts, build_animated_clip)
 from gemini_voice import generate_voice
 from script_prompt import SYSTEM_MSG, build_prompt, polish_script, clean_script_keep_tashkeel
-from pronunciation import script_problems, numbers_to_words, egyptianize
+from pronunciation import script_problems, numbers_to_words, egyptianize, drop_suspicious_sentences
+from llm_utils import groq_models, gemini_models, groq_json, gemini_json, is_dead
 from script_review import gemini_review
 from visuals import validate_visuals
 from trending import find_trending_topic, trend_slug
@@ -73,15 +74,9 @@ MAX_LONG_SLIDES = 40
 MAX_SHORT_SLIDES = 12
 MUSIC_VOLUME = 0.16       # مستوى الموسيقى تحت التعليق الصوتي
 
-# ====================== موديلات Groq المدعومة فقط (محدث سبتمبر 2026) ======================
-# llama-3.3-70b-versatile و llama-3.1-8b-instant بقوا Enterprise فقط ومش متاحين لحسابات المطورين العادية
-# mixtral-8x7b-32768 و gemma2-9b-it و llama3-8b-8192 اتلغوا (decommissioned)
-GROQ_MODELS = [
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "qwen/qwen3.6-27b",
-    "openai/gpt-oss-safeguard-20b"
-]
+# ====================== الموديلات ======================
+# بتتغير من متغيرات البيئة GEMINI_MODELS و GROQ_MODELS (قائمة مفصولة بفاصلة) من غير تعديل الكود. الافتراضي في llm_utils.py
+GROQ_MODELS = groq_models()
 
 # ====================== المصادر مرقمة بالترتيب ======================
 SOURCES = [
@@ -531,10 +526,70 @@ def find_best_news():
     return None
 
 
+def _finalize_content(content, article_text, model):
+    """تنظيف نهائي للمحتوى المولّد (عنوان، هاشتاجات، رسومات)"""
+    content['visuals'] = validate_visuals(content.get('visuals'), article_text)
+    print(f"🎨 بيانات الرسومات المقبولة: {list(content['visuals'].keys()) or 'مفيش (هتستخدم مشاهد عامة)'}")
+    content['video_script'] = clean_script_keep_tashkeel(content['video_script'])
+    content['video_description'] = strip_meta_mentions(clean_text_strict(content.get('video_description', '')))
+    content['shorts_title'] = clean_text_strict(content.get('shorts_title', ''))
+    content['shorts_script'] = clean_script_keep_tashkeel(content.get('shorts_script', ''))
+    content['facebook_post'] = strip_meta_mentions(clean_text_strict(content.get('facebook_post', '')))
+
+    tags = []
+    for t in content.get('hashtags', []):
+        ct = clean_text_strict(t).replace(' ', '_')
+        if ct and not ct.startswith('#'):
+            ct = '#' + ct
+        if len(ct) > 2:
+            tags.append(ct)
+
+    defaults = [
+        "#كرة_القدم",
+        "#الرياضة",
+        "#أخبار_رياضية",
+        "#الدوري_الانجليزي",
+        "#دوري_ابطال_اوروبا",
+        "#الأهلي",
+        "#الزمالك",
+        "#ليفربول",
+        "#ريال_مدريد",
+        "#محمد_صلاح",
+        "#الهلال",
+        "#النصر",
+        "#الدوري_السعودي",
+        "#مانشستر_سيتي",
+        "#برشلونة",
+        "#بايرن_ميونخ",
+        "#ميسي",
+        "#رونالدو",
+        "#نيمار",
+        "#عاجل"
+    ]
+
+    while len(tags) < 15:
+        for d in defaults:
+            if d not in tags:
+                tags.append(d)
+            if len(tags) >= 15:
+                break
+
+    content['hashtags'] = tags[:15]
+
+    if len(content['video_title']) > 60:
+        content['video_title'] = content['video_title'][:57] + "..."
+
+    if len(content['shorts_title']) > 40:
+        content['shorts_title'] = content['shorts_title'][:37] + "..."
+
+    print(f"✅ تم توليد المحتوى بنجاح باستخدام: {model}")
+    return content
+
+
 # ====================== الذكاء الاصطناعي (محتوى طويل) ======================
 def generate_ai_content(article):
     """توليد المحتوى باستخدام الذكاء الاصطناعي"""
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
     # تقصير نص المقال عشان مايتجاوزش حد التوكنز بالدقيقة (TPM) في الخطة المجانية
     MAX_ARTICLE_CHARS = 3000
@@ -546,102 +601,65 @@ def generate_ai_content(article):
     words = "700-900" if n >= 1500 else ("400-550" if n >= 700 else "200-300")
     prompt = build_prompt(article['title'], article_text, words=words)
 
-    for model in GROQ_MODELS:
+    # Gemini وGroq متساويين: بنبدّل بينهم (Gemini أولاً) عشان فشل مزود واحد ميوقفش التشغيلة
+    candidates = []
+    gm = [m for m in gemini_models() if os.environ.get('GEMINI_API_KEY')]
+    gq = [m for m in GROQ_MODELS if client]
+    for i in range(max(len(gm), len(gq))):
+        if i < len(gm):
+            candidates.append(('gemini', gm[i]))
+        if i < len(gq):
+            candidates.append(('groq', gq[i]))
+    if not candidates:
+        print("❌ مفيش ولا مفتاح (GEMINI_API_KEY / GROQ_API_KEY) متاح")
+        return None
+
+    best = None   # أفضل مرشح اتولد لو كلهم فيهم ملاحظات
+    for provider, model in candidates:
+        if is_dead(model):
+            continue
         try:
-            print(f"🤖 جاري التجربة مع موديل: {model}")
-
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": SYSTEM_MSG
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.4,
-                max_tokens=4000,
-                response_format={"type": "json_object"}
-            )
-
-            content = json.loads(completion.choices[0].message.content)
+            print(f"🤖 جاري التجربة مع موديل: {provider}/{model}")
+            if provider == 'gemini':
+                content = gemini_json(SYSTEM_MSG, prompt, model, temperature=0.4, max_tokens=8000)
+            else:
+                content = groq_json(client, model, SYSTEM_MSG, prompt, temperature=0.4, max_tokens=4000)
+            if not isinstance(content, dict) or not content.get('video_script') or not content.get('shorts_script'):
+                raise ValueError("JSON ناقص (مفيش سكريبت)")
 
             content['video_title'] = clean_text_strict(content.get('video_title', ''))
             # تدقيق مصري + أرقام بالكلمات + فحص المشاكل قبل التنظيف
             for _k in ("video_script", "shorts_script"):
                 _raw = content.get(_k, '') or ''
-                _raw = polish_script(client, model, numbers_to_words(_raw), article_text)   # مراجعة ١ (Groq)
+                _raw = numbers_to_words(_raw)
+                if provider == 'groq':
+                    _raw = polish_script(client, model, _raw, article_text)                  # مراجعة ١ (Groq)
                 _raw = gemini_review(_raw, article_text, label=_k)                          # مراجعة ٢ (Gemini)
                 content[_k] = numbers_to_words(egyptianize(_raw))
+            # فلتر الأسماء متساهل: نشيل الجملة المشبوهة بدل ما نرفض السكريبت كله
+            for _k in ("video_script", "shorts_script"):
+                content[_k], _dropped = drop_suspicious_sentences(content[_k], article_text)
+                if _dropped:
+                    print(f"✂️ اتشالت جملة فيها اسم مش في المصدر ({_k}): {_dropped[0][:60]}")
             _probs = script_problems(content["video_script"], article_text) + \
                      script_problems(content["shorts_script"], article_text)
             if _probs:
-                print(f"⚠️ مشاكل في سكريبت {model}: {_probs} - تجربة الموديل التالي")
+                print(f"⚠️ مشاكل في سكريبت {provider}/{model}: {_probs} - تجربة الموديل التالي")
+                if best is None or len(_probs) < best[0]:
+                    best = (len(_probs), provider, model, content)
                 continue
-            content['visuals'] = validate_visuals(content.get('visuals'), article_text)
-            print(f"🎨 بيانات الرسومات المقبولة: {list(content['visuals'].keys()) or 'مفيش (هتستخدم مشاهد عامة)'}")
-            content['video_script'] = clean_script_keep_tashkeel(content['video_script'])
-            content['video_description'] = strip_meta_mentions(clean_text_strict(content.get('video_description', '')))
-            content['shorts_title'] = clean_text_strict(content.get('shorts_title', ''))
-            content['shorts_script'] = clean_script_keep_tashkeel(content.get('shorts_script', ''))
-            content['facebook_post'] = strip_meta_mentions(clean_text_strict(content.get('facebook_post', '')))
-
-            tags = []
-            for t in content.get('hashtags', []):
-                ct = clean_text_strict(t).replace(' ', '_')
-                if ct and not ct.startswith('#'):
-                    ct = '#' + ct
-                if len(ct) > 2:
-                    tags.append(ct)
-
-            defaults = [
-                "#كرة_القدم",
-                "#الرياضة",
-                "#أخبار_رياضية",
-                "#الدوري_الانجليزي",
-                "#دوري_ابطال_اوروبا",
-                "#الأهلي",
-                "#الزمالك",
-                "#ليفربول",
-                "#ريال_مدريد",
-                "#محمد_صلاح",
-                "#الهلال",
-                "#النصر",
-                "#الدوري_السعودي",
-                "#مانشستر_سيتي",
-                "#برشلونة",
-                "#بايرن_ميونخ",
-                "#ميسي",
-                "#رونالدو",
-                "#نيمار",
-                "#عاجل"
-            ]
-
-            while len(tags) < 15:
-                for d in defaults:
-                    if d not in tags:
-                        tags.append(d)
-                    if len(tags) >= 15:
-                        break
-
-            content['hashtags'] = tags[:15]
-
-            if len(content['video_title']) > 60:
-                content['video_title'] = content['video_title'][:57] + "..."
-
-            if len(content['shorts_title']) > 40:
-                content['shorts_title'] = content['shorts_title'][:37] + "..."
-
-            print(f"✅ تم توليد المحتوى بنجاح باستخدام: {model}")
-            return content
+            return _finalize_content(content, article_text, f"{provider}/{model}")
 
         except Exception as e:
             print(f"⚠️ فشل الموديل {model}: {e}")
             continue
 
+    if best is not None and best[0] <= 2:
+        print(f"⚠️ مفيش مرشح نضيف 100٪، هستخدم أفضل واحد ({best[1]}/{best[2]}) وفيه {best[0]} ملاحظة بسيطة")
+        content = best[3]
+        content['_accepted_with_notes'] = True
+        # نكمل نفس المعالجة اللي تحت عن طريق إعادة تشغيل الدالة بدون فحص (انظر _finalize)
+        return _finalize_content(content, article_text, best[2])
     print("❌ فشلت جميع الموديلات")
     return None
 
@@ -1043,6 +1061,9 @@ def pick_content():
 
 
 # ====================== التنفيذ الرئيسي ======================
+NOTHING_PUBLISHED = [False]
+
+
 async def main():
     """الدالة الرئيسية للتنفيذ"""
     print("=" * 60)
@@ -1060,7 +1081,8 @@ async def main():
         payload, ai, used_mode = pick_content()
     if not payload:
         print("😴 لا يوجد محتوى مناسب في هذه التشغيلة (لا ترند ولا أخبار جديدة).")
-        return
+        print("❌ التشغيلة ما نشرتش أي فيديو - هتظهر حمرا")
+        sys.exit(1)
 
     print(f"\n📰 المحتوى المختار ({ {'trending':'ترندي','manual':'يدوي'}.get(used_mode,'من مصدر') }):")
     print(f"   المصدر: {payload['source_name']}")
@@ -1179,6 +1201,7 @@ async def main():
             save_next_video_type('source' if used_mode == 'trending' else 'trending')
     else:
         print("⚠️ فشل إنتاج الفيديوهات — لن يتم حفظ الهيستوري ولا تغيير التناوب")
+        NOTHING_PUBLISHED[0] = True
 
     print("\n🧹 تنظيف الملفات المؤقتة...")
     files_to_remove = [video_audio, shorts_audio, video_file, shorts_file]
@@ -1188,6 +1211,10 @@ async def main():
         if os.path.exists(f):
             os.remove(f)
             print(f"   ✓ تم حذف: {f}")
+
+    if NOTHING_PUBLISHED[0] or not something_uploaded:
+        print("❌ مفيش أي فيديو اتنشر في التشغيلة دي - هتظهر حمرا")
+        sys.exit(1)
 
     print("\n" + "=" * 60)
     print("✅ اكتمل التنفيذ بنجاح")
