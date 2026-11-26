@@ -58,5 +58,17 @@
         "source": "yallakora.com",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-26 20:33:12"
+    },
+    {
+        "link": "https://www.fourfourtwo.com",
+        "source": "FourFourTwo",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-26 21:31:22"
+    },
+    {
+        "link": "https://www.fourfourtwo.com/person/coaches-managers/would-hiring-pep-guardiola-mean-the-usa-would-win-the-world-cup-no-but-it-would-be-a-little-bit-of-a-buzz-american-legend-speaks-to-fft-about-reports-linking-former-manchester-city-and-barcelona-manager-with-the-vacant-national-team-job",
+        "source": "FourFourTwo",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-26 21:47:38"
     }
 ]
