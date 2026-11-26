@@ -37,6 +37,7 @@ jobs:
         pip install requests beautifulsoup4 Pillow numpy
         pip install moviepy==1.0.3
         pip install edge-tts groq
+        pip install google-genai arabic-reshaper python-bidi
         pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
 
     - name: Run Bot
@@ -45,6 +46,9 @@ jobs:
         YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
         FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
         FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GEMINI_TTS_MODEL: gemini-2.5-flash-preview-tts
+        GEMINI_TTS_VOICE: Charon
       run: python youtube_arabic.py
 
     - name: Commit and Push Changes
@@ -60,4 +64,5 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
-        rm -f *.jpg *.mp3 *.mp4 *.png || true
+        rm -f *.jpg *.mp3 *.mp4 *.png *.wav || true
+        rm -rf tts_segments || true
