@@ -371,7 +371,8 @@ def create_content_slide(text, out_path, width, height, index=1, total=1, kicker
 
     # العداد أعلى اليسار
     if total > 1:
-        counter = f"{_to_arabic_digits(index)} / {_to_arabic_digits(total)}"
+        # الرسم RTL يعكس ترتيب السلسلة: نبنيها معكوسة لتظهر "الحالي / الإجمالي"
+        counter = f"{_to_arabic_digits(total)} / {_to_arabic_digits(index)}"
         cnt_font = get_font(int(height * 0.026), bold=False)
         draw_anchored(draw, (int(width * 0.05), cy0 + pad_y), counter, cnt_font,
                       BRAND["gray"], anchor="la")
