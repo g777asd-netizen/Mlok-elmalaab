@@ -48,6 +48,18 @@ def find_tiktok_channel(key):
     raise RuntimeError("مفيش قناة تيكتوك مربوطة في Buffer")
 
 
+def shrink_for_hosting(video_path, max_mb=60):
+    """فيديو ٣ دقايق بجودة عالية ممكن يعدي ١٠٠ ميجا (حد جيت هب). بنعمل نسخة أخف لتيكتوك بس، والأصلي ما بيتغيرش."""
+    if os.path.getsize(video_path) <= max_mb * 1024 * 1024:
+        return video_path
+    out = video_path + ".tt.mp4"
+    subprocess.run(["ffmpeg", "-y", "-i", video_path, "-c:v", "libx264", "-b:v", "2200k", "-maxrate", "2800k",
+                    "-bufsize", "5000k", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                    "-movflags", "+faststart", out], check=True, capture_output=True, timeout=600)
+    print(f"   اتعملت نسخة أخف لتيكتوك: {os.path.getsize(out)/1048576:.0f} ميجا")
+    return out
+
+
 def host_video(video_path):
     """يرفع الملف على فرع media ويرجع رابط raw عام."""
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -105,7 +117,7 @@ def post_short_to_tiktok(video_path, title, hashtags):
     try:
         print("🎵 نشر الشورتس على تيكتوك عن طريق Buffer...")
         channel = find_tiktok_channel(key)
-        url = host_video(video_path)
+        url = host_video(shrink_for_hosting(video_path))
         tags = " ".join(h if h.startswith("#") else "#" + h for h in (hashtags or [])[:6])
         text = re.sub(r"\s+", " ", f"{title} {tags}").strip()[:2000]
         last = ""
