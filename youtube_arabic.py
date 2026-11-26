@@ -675,8 +675,9 @@ async def generate_audio(text, output_file):
     return output_file
 
 
-# ====================== ضمان حد الشورتس (أقل من ٦٠ ثانية) ======================
+# ====================== ضمان حد الشورتس (مش مستخدمة للشورتس دلوقتي) ======================
 SHORTS_MAX_SECONDS = 58.0
+YT_SHORTS_LIMIT_SECONDS = 180.0   # حد يوتيوب للشورتس ٣ دقايق (support.google.com/youtube/answer/15424877)
 
 def enforce_shorts_duration(audio_path):
     """لو صوت الشورتس عدّى الحد، يتسرّع قليلاً (atempo) ليدخل في حدود يوتيوب شورتس"""
@@ -700,6 +701,26 @@ def enforce_shorts_duration(audio_path):
     except Exception as e:
         print(f"⚠️ تعذر ضبط مدة الشورتس: {e}")
 
+
+
+def _audio_duration(path):
+    import subprocess
+    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", path],
+                       capture_output=True, text=True, timeout=30)
+    return float(p.stdout.strip())
+
+
+async def prepare_shorts_audio(script, long_audio, out_audio):
+    """الشورتس بنفس السكريبت والصوت بالظبط، بنفس الطول من غير قطع ولا تسريع.
+    لو الصوت أطول من ٣ دقايق يوتيوب مش هيصنفه Short (هيتحسب فيديو عادي) بس بيترفع زي ما هو."""
+    import shutil
+    shutil.copy(long_audio, out_audio)
+    dur = _audio_duration(out_audio)
+    if dur > YT_SHORTS_LIMIT_SECONDS:
+        print(f"ℹ️ مدة الشورتس {dur:.0f} ثانية، أكتر من ٣ دقايق: يوتيوب مش هيصنفه Short وهيظهر كفيديو عادي، "
+              "بس اترفع زي ما طلبت بنفس الطول.")
+    return script, dur
 
 # ====================== الشرائح من السكريبت ======================
 def derive_slide_lines(script, max_slides, max_chars=170):
@@ -1168,14 +1189,13 @@ async def main():
     print("\n🎙️ توليد الصوت للفيديو الطويل...")
     await generate_audio(ai['video_script'], video_audio)
 
-    print("\n🎙️ توليد الصوت للشورتس...")
-    await generate_audio(ai['shorts_script'], shorts_audio)
-    enforce_shorts_duration(shorts_audio)
+    print("\n🎙️ تجهيز صوت الشورتس (نفس سكريبت وصوت الفيديو الطويل)...")
+    ai['shorts_script'], _short_dur = await prepare_shorts_audio(ai['video_script'], video_audio, shorts_audio)
 
     kicker = "الأكثر بحثاً الآن" if used_mode == 'trending' else "آخر الأخبار"
 
     long_slides = derive_slide_lines(ai['video_script'], MAX_LONG_SLIDES, max_chars=120)
-    short_slides = derive_slide_lines(ai['shorts_script'], MAX_SHORT_SLIDES, max_chars=90)
+    short_slides = derive_slide_lines(ai['shorts_script'], max(MAX_SHORT_SLIDES, int(_short_dur // 9)), max_chars=90)
     print(f"\n🖼️ الشرائح: {len(long_slides)} للفيديو الطويل، {len(short_slides)} للشورتس")
 
     print("\n🎬 إنتاج الفيديو الطويل...")
@@ -1226,7 +1246,7 @@ async def main():
 
     if shorts_success:
         print("\n📤 رفع الشورتس...")
-        shorts_description = ai['shorts_script']
+        shorts_description = ai['video_description']   # وصف سيو حقيقي، مش نص السكريبت
         shorts_ok = upload_to_youtube(
             shorts_file,
             ai['shorts_title'],
