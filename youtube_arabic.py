@@ -33,13 +33,15 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from moviepy.editor import (VideoFileClip, AudioFileClip, ImageClip,
-                            CompositeVideoClip, concatenate_videoclips)
+from moviepy.editor import (AudioFileClip, ImageClip,
+                            CompositeVideoClip, CompositeAudioClip,
+                            concatenate_videoclips)
 from groq import Groq
-import edge_tts
-from branding import (create_brand_overlay, create_intro_card, create_outro_card,
-                      ensure_fonts, enhance_image)
+from branding import (create_intro_card, create_outro_card,
+                      create_content_slide, create_thumbnail, ensure_fonts)
 from gemini_voice import generate_voice
+from trending import find_trending_topic
+from music_bed import render_music_bed
 
 # ====================== المتغيرات البيئة والإعدادات ======================
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
@@ -55,8 +57,17 @@ FPS = 30
 HISTORY_FILE = "history.json"
 SOURCE_INDEX_FILE = "source_index.json"
 FAILED_LINKS_FILE = "failed_links.json"
+ROTATION_FILE = "rotation_state.json"
 CHANNEL_NAME_AR = "ملوك الملعب"
 CHANNEL_NAME_EN = "Kings of the Stadium"
+
+# إعدادات الشرائح والموسيقى
+CROSSFADE_SEC = 0.5
+INTRO_DURATION = 3.0
+OUTRO_DURATION = 3.5
+MAX_LONG_SLIDES = 14
+MAX_SHORT_SLIDES = 7
+MUSIC_VOLUME = 0.16       # مستوى الموسيقى تحت التعليق الصوتي
 
 # ====================== موديلات Groq المدعومة فقط (محدث سبتمبر 2026) ======================
 # llama-3.3-70b-versatile و llama-3.1-8b-instant بقوا Enterprise فقط ومش متاحين لحسابات المطورين العادية
@@ -204,6 +215,31 @@ BLACKLIST_KEYWORDS = [
 ]
 
 
+# ====================== نظام التناوب (ترندي / مصدر) ======================
+def get_next_video_type():
+    """نوع الفيديو المطلوب في التشغيلة دي: trending أو source"""
+    if os.path.exists(ROTATION_FILE):
+        try:
+            with open(ROTATION_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if data.get('next_type') in ('trending', 'source'):
+                    return data['next_type']
+        except Exception as e:
+            print(f"⚠️ خطأ في قراءة ملف التناوب: {e}")
+    return "trending"
+
+
+def save_next_video_type(next_type):
+    """حفظ نوع الفيديو للتشغيلة القادمة"""
+    data = {
+        'next_type': next_type,
+        'updated_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(ROTATION_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+    print(f"🔁 التشغيلة القادمة: {'موضوع ترندي' if next_type == 'trending' else 'خبر من مصدر'}")
+
+
 # ====================== نظام ترتيب المصادر (محسن) ======================
 def get_current_source_index():
     """الحصول على رقم المصدر الحالي من الملف"""
@@ -221,7 +257,7 @@ def get_current_source_index():
 def save_next_source_index(current_index):
     """حفظ رقم المصدر التالي للتشغيل القادم"""
     next_index = (current_index + 1) % len(SOURCES)
-    
+
     data = {
         'current_index': next_index,
         'last_used_index': current_index,
@@ -229,10 +265,10 @@ def save_next_source_index(current_index):
         'updated_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         'total_sources': len(SOURCES)
     }
-    
+
     with open(SOURCE_INDEX_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
-    
+
     print(f"📝 تم حفظ المصدر التالي: [{next_index + 1}/{len(SOURCES)}] {SOURCES[next_index]['name']}")
 
 
@@ -240,14 +276,14 @@ def get_current_source():
     """الحصول على المصدر الحالي للاستخدام"""
     current_index = get_current_source_index()
     source = SOURCES[current_index]
-    
+
     print(f"")
     print(f"📌 ═══════════════════════════════════════════════")
     print(f"📌 المصدر الحالي: [{source['id']}/{len(SOURCES)}] {source['name']}")
     print(f"📌 الرابط: {source['url']}")
     print(f"📌 ═══════════════════════════════════════════════")
     print(f"")
-    
+
     return current_index, source
 
 
@@ -281,19 +317,19 @@ def save_history(link, source_name):
         except Exception as e:
             print(f"⚠️ خطأ في قراءة الهيستوري للحفظ: {e}")
             data = []
-    
+
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     new_entry = {
         "link": link,
         "source": source_name,
         "added_at": current_time
     }
-    
+
     data.append(new_entry)
-    
+
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
-    
+
     print(f"✅ تم حفظ الرابط في الهيستوري (إجمالي: {len(data)} رابط)")
 
 
@@ -333,45 +369,21 @@ def clean_text_strict(text):
     if not text:
         return ""
     text = re.sub(r'[a-zA-Z]', '', text)
-    text = re.sub(r'[^\u0600-\u06FF0-9\s\.\,\!\?\(\)\-\#\_]', '', text)
+    text = re.sub(r'[^؀-ۿ0-9\s\.\,\!\?\(\)\-\#\_]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
-def download_and_flip_image(url, filename):
-    """تحميل الصورة وعكسها أفقياً"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, stream=True, timeout=15)
-        if response.status_code == 200:
-            with open(filename, 'wb') as f:
-                for chunk in response.iter_content(1024):
-                    f.write(chunk)
-            img = PIL.Image.open(filename)
-            img = img.convert('RGB')
-            img = ImageOps.mirror(img)
-            img.save(filename, 'JPEG', quality=95)
-            print(f"✅ تم تحميل وعكس الصورة: {filename}")
-            return True
-        else:
-            print(f"❌ فشل تحميل الصورة - Status: {response.status_code}")
-    except Exception as e:
-        print(f"❌ فشل تحميل/عكس الصورة: {e}")
-    return False
-
-
-# ====================== استخراج المحتوى ======================
+# ====================== استخراج المحتوى (نص فقط — بلا صور) ======================
 def get_article_content(url):
-    """استخراج محتوى المقال من الرابط"""
+    """استخراج عنوان ومحتوى المقال من الرابط — لا يتم تحميل أي صور"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         response = requests.get(url, headers=headers, timeout=8)
         soup = BeautifulSoup(response.content, 'html.parser')
-        
+
         title = ""
         if soup.title:
             title = soup.title.string
@@ -379,34 +391,15 @@ def get_article_content(url):
         if h1:
             title = h1.get_text().strip()
 
-        img_url = None
-        og_image = soup.find("meta", property="og:image")
-        if og_image:
-            img_url = og_image.get("content")
-        
-        if not img_url:
-            tw_image = soup.find("meta", attrs={"name": "twitter:image"})
-            if tw_image:
-                img_url = tw_image.get("content")
-        
-        if not img_url:
-            first_img = soup.find("img", src=True)
-            if first_img:
-                img_url = first_img.get("src")
-        
-        if not img_url:
-            return None
-
         paragraphs = soup.find_all('p')
         text_content = " ".join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 30])
-        
+
         if len(text_content) < 500:
             return None
-        
+
         return {
             'title': title,
             'text': text_content,
-            'image': img_url,
             'url': url
         }
     except Exception as e:
@@ -419,21 +412,21 @@ MAX_SEARCH_SECONDS = 240  # 4 دقائق كحد أقصى لمرحلة البحث
 def find_best_news():
     """البحث عن أفضل خبر بالترتيب - بتجرب كل المصادر في نفس التشغيلة قبل ما توقف، مع حد زمني أقصى"""
     history = load_history()
-    
+
     total_sources = len(SOURCES)
     attempts = 0
     start_time = time.time()
-    
+
     while attempts < total_sources:
         elapsed = time.time() - start_time
         if elapsed > MAX_SEARCH_SECONDS:
             print(f"⏱️ تم تجاوز الحد الأقصى لوقت البحث ({MAX_SEARCH_SECONDS}s) - إيقاف البحث والاكتفاء بالمحاولات اللي تمت")
             break
-        
+
         attempts += 1
         current_index, source = get_current_source()
         save_next_source_index(current_index)
-        
+
         try:
             print(f"🔎 جاري البحث في: {source['name']}...")
             headers = {
@@ -441,10 +434,10 @@ def find_best_news():
             }
             resp = requests.get(source['url'], headers=headers, timeout=8)
             soup = BeautifulSoup(resp.content, 'html.parser')
-            
+
             links = soup.find_all('a', href=True)
             valid_links = []
-            
+
             for a in links:
                 href = a['href']
                 if not href.startswith('http'):
@@ -453,35 +446,35 @@ def find_best_news():
                         href = base + href
                     else:
                         href = base + '/' + href
-                
+
                 if href in history:
                     continue
-                
+
                 check_str = (href + " " + a.get_text()).lower()
-                
+
                 is_sports = False
                 for kw in STRICT_KEYWORDS:
                     if kw.lower() in check_str:
                         is_sports = True
                         break
-                
+
                 if not is_sports:
                     continue
-                
+
                 is_blacklisted = False
                 for bl in BLACKLIST_KEYWORDS:
                     if bl.lower() in check_str:
                         is_blacklisted = True
                         break
-                
+
                 if is_blacklisted:
                     continue
 
                 if len(a.get_text().strip()) > 15:
                     valid_links.append(href)
-            
+
             print(f"📋 تم العثور على {len(valid_links)} رابط محتمل")
-            
+
             if valid_links:
                 random.shuffle(valid_links)
                 for chosen_link in valid_links[:5]:
@@ -489,15 +482,15 @@ def find_best_news():
                         print(f"⏱️ تم تجاوز الحد الأقصى لوقت البحث أثناء تجربة الروابط - إيقاف")
                         break
                     data = get_article_content(chosen_link)
-                    
-                    if data and len(data['text']) > 800 and data['image']:
+
+                    if data and len(data['text']) > 800:
                         title_check = data['title'].lower()
                         has_keyword = False
                         for kw in STRICT_KEYWORDS:
                             if kw.lower() in title_check:
                                 has_keyword = True
                                 break
-                        
+
                         if has_keyword:
                             print(f"🎯 تم العثور على خبر مناسب!")
                             data['source_name'] = source['name']
@@ -506,16 +499,16 @@ def find_best_news():
                         else:
                             save_failed_link(chosen_link, source['name'], "العنوان لا يحتوي على كلمات مفتاحية رياضية")
                     else:
-                        save_failed_link(chosen_link, source['name'], "فشل استخراج المحتوى / المحتوى قصير / لا توجد صورة")
-            
+                        save_failed_link(chosen_link, source['name'], "فشل استخراج المحتوى / المحتوى قصير")
+
             print(f"😔 لم يتم العثور على خبر مناسب في {source['name']}")
-            
+
         except Exception as e:
             print(f"❌ خطأ في المصدر {source['name']}: {e}")
-        
+
         if attempts < total_sources:
             print(f"➡️ جاري الانتقال للمصدر التالي في نفس التشغيلة...")
-    
+
     print(f"😴 تم تجربة كل المصادر ({total_sources}) في هذه التشغيلة ولم يتم العثور على خبر مناسب")
     return None
 
@@ -524,13 +517,13 @@ def find_best_news():
 def generate_ai_content(article):
     """توليد المحتوى باستخدام الذكاء الاصطناعي"""
     client = Groq(api_key=GROQ_API_KEY)
-    
+
     # تقصير نص المقال عشان مايتجاوزش حد التوكنز بالدقيقة (TPM) في الخطة المجانية
     MAX_ARTICLE_CHARS = 3000
     article_text = article['text']
     if len(article_text) > MAX_ARTICLE_CHARS:
         article_text = article_text[:MAX_ARTICLE_CHARS]
-    
+
     prompt = f"""
 أنت محلل رياضي محترف ومعلق كروي خبير.
 سأعطيك خبر رياضي، مطلوب منك إنشاء محتوى بالعامية المصرية بأسلوب معلق كروي شعبي طبيعي.
@@ -585,11 +578,11 @@ def generate_ai_content(article):
     "facebook_post": "منشور فيسبوك جذاب مع إيموجي"
 }}
 """
-    
+
     for model in GROQ_MODELS:
         try:
             print(f"🤖 جاري التجربة مع موديل: {model}")
-            
+
             completion = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -606,16 +599,16 @@ def generate_ai_content(article):
                 max_tokens=4000,
                 response_format={"type": "json_object"}
             )
-            
+
             content = json.loads(completion.choices[0].message.content)
-            
+
             content['video_title'] = clean_text_strict(content.get('video_title', ''))
             content['video_script'] = clean_text_strict(content.get('video_script', ''))
             content['video_description'] = clean_text_strict(content.get('video_description', ''))
             content['shorts_title'] = clean_text_strict(content.get('shorts_title', ''))
             content['shorts_script'] = clean_text_strict(content.get('shorts_script', ''))
             content['facebook_post'] = clean_text_strict(content.get('facebook_post', ''))
-            
+
             tags = []
             for t in content.get('hashtags', []):
                 ct = clean_text_strict(t).replace(' ', '_')
@@ -623,7 +616,7 @@ def generate_ai_content(article):
                     ct = '#' + ct
                 if len(ct) > 2:
                     tags.append(ct)
-            
+
             defaults = [
                 "#كرة_القدم",
                 "#الرياضة",
@@ -646,29 +639,29 @@ def generate_ai_content(article):
                 "#نيمار",
                 "#عاجل"
             ]
-            
+
             while len(tags) < 15:
                 for d in defaults:
                     if d not in tags:
                         tags.append(d)
                     if len(tags) >= 15:
                         break
-            
+
             content['hashtags'] = tags[:15]
-            
+
             if len(content['video_title']) > 60:
                 content['video_title'] = content['video_title'][:57] + "..."
-            
+
             if len(content['shorts_title']) > 40:
                 content['shorts_title'] = content['shorts_title'][:37] + "..."
-            
+
             print(f"✅ تم توليد المحتوى بنجاح باستخدام: {model}")
             return content
-        
+
         except Exception as e:
             print(f"⚠️ فشل الموديل {model}: {e}")
             continue
-    
+
     print("❌ فشلت جميع الموديلات")
     return None
 
@@ -682,75 +675,142 @@ async def generate_audio(text, output_file):
     return output_file
 
 
-# ====================== إنشاء إطار الأخبار ======================
-def create_news_overlay(width, height):
-    """الإطار الموحد للهوية البصرية (كحلي/ذهبي مع خط Cairo) — التفاصيل في branding.py"""
-    return create_brand_overlay(width, height)
+# ====================== ضمان حد الشورتس (أقل من ٦٠ ثانية) ======================
+SHORTS_MAX_SECONDS = 58.0
+
+def enforce_shorts_duration(audio_path):
+    """لو صوت الشورتس عدّى الحد، يتسرّع قليلاً (atempo) ليدخل في حدود يوتيوب شورتس"""
+    try:
+        import subprocess
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True, text=True, timeout=30)
+        duration = float(probe.stdout.strip())
+        if duration <= SHORTS_MAX_SECONDS:
+            return
+        factor = duration / SHORTS_MAX_SECONDS
+        print(f"⏱️ صوت الشورتس {duration:.1f}ث — تسريع ×{factor:.2f} ليدخل في حد {SHORTS_MAX_SECONDS:.0f}ث")
+        tmp = audio_path + ".fast.mp3"
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path, "-filter:a", f"atempo={factor:.4f}",
+             "-codec:a", "libmp3lame", "-b:a", "192k", tmp],
+            check=True, capture_output=True, timeout=120)
+        os.replace(tmp, audio_path)
+    except Exception as e:
+        print(f"⚠️ تعذر ضبط مدة الشورتس: {e}")
 
 
-# ====================== إنشاء الفيديو مع Zoom ======================
-def create_zooming_video(image_path, audio_path, output_path, width, height, is_shorts, title=None):
-    """إنشاء فيديو بجودة عالية مع تأثير الزوم + بطاقة افتتاحية وختامية بالهوية البصرية"""
+# ====================== الشرائح من السكريبت ======================
+def derive_slide_lines(script, max_slides, max_chars=170):
+    """اشتقاق أسطر الشرائح من جُمل السكريبت نفسه (تطابق تام مع التعليق الصوتي)"""
+    sentences = [s.strip() for s in re.split(r'(?<=[\.!\?؟])\s+', script.replace('\n', ' '))
+                 if len(s.strip()) > 2]
+    if not sentences:
+        sentences = [script.strip()[:max_chars] or CHANNEL_NAME_AR]
+
+    # الجُمل الطويلة جداً تتقسم على حدود الكلمات
+    pieces = []
+    for s in sentences:
+        while len(s) > max_chars:
+            cut = s.rfind(' ', 0, max_chars)
+            cut = cut if cut > 40 else max_chars
+            pieces.append(s[:cut])
+            s = s[cut:].strip()
+        if s:
+            pieces.append(s)
+
+    # دمج أقصر جملتين متتاليتين حتى نصل للعدد المطلوب
+    slides = pieces
+    while len(slides) > max_slides:
+        lengths = [len(a) + len(b) for a, b in zip(slides, slides[1:])]
+        i = lengths.index(min(lengths))
+        slides = slides[:i] + [slides[i] + " " + slides[i + 1]] + slides[i + 2:]
+
+    return slides
+
+
+def _slide_durations(slide_texts, total_seconds):
+    """توزيع مدة الشرائح بالتناسب مع طول نص كل شريحة"""
+    weights = [max(len(t), 20) for t in slide_texts]
+    total_w = sum(weights)
+    durations = [total_seconds * w / total_w for w in weights]
+    durations = [max(2.5, d) for d in durations]
+    scale = total_seconds / sum(durations)
+    return [d * scale for d in durations]
+
+
+# ====================== إنشاء الفيديو بالشرائح + الموسيقى ======================
+def create_slideshow_video(slide_texts, audio_path, output_path, width, height,
+                           is_shorts, title=None, kicker=""):
+    """
+    فيديو من شرائح أصلية التصميم (بدون أي صورة خارجية):
+    بطاقة افتتاحية + شرائح المحتوى بحركة زوم هادئة وانتقالات ناعمة + بطاقة ختامية،
+    مع تعليق صوتي وموسيقى خلفية أصلية مولدة بالكود.
+    """
+    slide_files = []
+    music_path = None
     try:
         video_type = "شورتس" if is_shorts else "فيديو"
-        print(f"🎬 جاري المونتاج ({video_type})...")
-        
-        audio = AudioFileClip(audio_path)
-        duration = audio.duration + 1
-        
-        print(f"⏱️ المدة: {duration:.1f} ثانية ({duration/60:.2f} دقيقة)")
-        
-        img = ImageClip(image_path)
-        
-        aspect_ratio = img.w / img.h
-        target_ratio = width / height
-        
-        if aspect_ratio > target_ratio:
-            img = img.resize(height=height)
-            x_center = (img.w - width) / 2
-            img = img.crop(x1=x_center, width=width, height=height)
-        else:
-            img = img.resize(width=width)
-            y_center = (img.h - height) / 2
-            img = img.crop(y1=y_center, width=width, height=height)
-        
-        if is_shorts:
-            zoom_factor = 1.15
-        else:
-            zoom_factor = 1.08
-        
-        def zoom_effect(t):
-            return 1 + (zoom_factor - 1) * (t / duration)
-        
-        zoomed_bg = (img
-                     .resize(zoom_effect)
-                     .set_position('center')
-                     .set_duration(duration))
-        
-        overlay_path = create_news_overlay(width, height)
-        overlay_clip = (ImageClip(overlay_path)
-                        .set_duration(duration)
-                        .set_position(("center", "top")))
-        
-        main_segment = CompositeVideoClip(
-            [zoomed_bg, overlay_clip],
-            size=(width, height)
-        ).set_audio(audio)
-        
-        # بطاقات الافتتاح والختام للفيديو الطويل فقط (الشورتس يبدأ بالخبر مباشرة)
-        intro_path = None
-        outro_path = None
-        clips = [main_segment]
+        print(f"🎬 جاري المونتاج بالشرائح ({video_type})...")
+
+        voice = AudioFileClip(audio_path)
+        content_dur = voice.duration
+        print(f"⏱️ مدة التعليق: {content_dur:.1f} ثانية ({content_dur/60:.2f} دقيقة)")
+
+        # توليد صور الشرائح
+        durations = _slide_durations(slide_texts, content_dur)
+        total = len(slide_texts)
+        for i, (text, dur) in enumerate(zip(slide_texts, durations), 1):
+            path = f"slide_{'s' if is_shorts else 'v'}_{i:02d}.png"
+            create_content_slide(text, path, width, height, index=i, total=total,
+                                 kicker=kicker)
+            slide_files.append(path)
+        print(f"🖼️ تم توليد {total} شريحة أصلية")
+
+        def ken_burns(path, dur):
+            img = ImageClip(path)
+            zoom_total = 0.06 if not is_shorts else 0.08
+            return (img
+                    .resize(lambda t: 1 + zoom_total * (t / max(dur, 0.1)))
+                    .set_position('center')
+                    .set_duration(dur + CROSSFADE_SEC))
+
+        clips = []
         if not is_shorts:
             date_str = datetime.now().strftime("%Y/%m/%d")
-            intro_path = create_intro_card(title or CHANNEL_NAME_AR, "intro_card.png", width, height, date_str)
+            intro_path = create_intro_card(title or CHANNEL_NAME_AR, "intro_card.png",
+                                           width, height, date_str)
+            slide_files.append(intro_path)
+            clips.append(ImageClip(intro_path).set_duration(INTRO_DURATION + CROSSFADE_SEC))
+
+        for path, dur in zip(slide_files[:total], durations):
+            clip = ken_burns(path, dur)
+            if clips:
+                clip = clip.crossfadein(CROSSFADE_SEC)
+            clips.append(clip)
+
+        if not is_shorts:
             outro_path = create_outro_card("outro_card.png", width, height)
-            clips = ([ImageClip(intro_path).set_duration(3.0)]
-                     + clips
-                     + [ImageClip(outro_path).set_duration(3.5)])
-        
-        final = concatenate_videoclips(clips, method="compose")
-        
+            slide_files.append(outro_path)
+            clips.append(ImageClip(outro_path)
+                         .set_duration(OUTRO_DURATION + CROSSFADE_SEC)
+                         .crossfadein(CROSSFADE_SEC))
+
+        final = concatenate_videoclips(clips, method="compose", padding=-CROSSFADE_SEC)
+        total_dur = final.duration
+        print(f"⏱️ المدة الكلية: {total_dur:.1f} ثانية")
+
+        # موسيقى خلفية أصلية بطول الفيديو بالظبط
+        music_path = "music_bed.wav"
+        render_music_bed(music_path, total_dur)
+        music = AudioFileClip(music_path).volumex(MUSIC_VOLUME)
+
+        voice_start = (INTRO_DURATION) if not is_shorts else 0.0
+        audio_mix = CompositeAudioClip([music, voice.set_start(voice_start)])
+        audio_mix = audio_mix.set_duration(total_dur)
+        final = final.set_audio(audio_mix)
+
         final.write_videofile(
             output_path,
             fps=FPS,
@@ -764,17 +824,26 @@ def create_zooming_video(image_path, audio_path, output_path, width, height, is_
             verbose=False,
             logger=None
         )
-        
-        for tmp in (overlay_path, intro_path, outro_path):
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        
+
         print(f"✅ تم إنشاء {video_type}: {output_path}")
         return True
-    
+
     except Exception as e:
         print(f"❌ Video Error: {e}")
         return False
+
+    finally:
+        for tmp in slide_files:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        if music_path and os.path.exists(music_path):
+            try:
+                os.remove(music_path)
+            except OSError:
+                pass
 
 
 # ====================== الرفع لليوتيوب ======================
@@ -784,7 +853,7 @@ def get_youtube_service():
         raw_token = ''.join((YOUTUBE_TOKEN_B64 or '').split()).strip('"\'')
         raw_token += '=' * (-len(raw_token) % 4)
         token_data = base64.b64decode(raw_token)
-        
+
         try:
             creds = pickle.loads(token_data)
         except Exception as e:
@@ -793,38 +862,36 @@ def get_youtube_service():
 
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        
+
         return build('youtube', 'v3', credentials=creds)
-    
+
     except Exception as e:
         print(f"❌ Youtube Auth Error: {e}")
         return None
 
 
-def upload_to_youtube(video_path, title, description, tags, is_shorts):
-    """رفع الفيديو لليوتيوب"""
+def upload_to_youtube(video_path, title, description, tags, is_shorts, thumbnail_path=None):
+    """رفع الفيديو لليوتيوب مع الصورة المصغرة المخصصة"""
     youtube = get_youtube_service()
     if not youtube:
         return False
-    
+
     video_type = "شورتس" if is_shorts else "فيديو"
     print(f"🚀 جاري رفع {video_type} لليوتيوب...")
-    
+
     final_title = title
     if is_shorts:
         final_title = title + " #Shorts"
-    
+
     hashtags_str = " ".join(tags)
-    full_description = (f"{description}\n\n"
-                        "📢 ملحوظة: التعليق الصوتي في هذا الفيديو مولّد بتقنية الذكاء الاصطناعي.\n\n"
-                        f"{hashtags_str}")
-    
+    full_description = f"{description}\n\n{hashtags_str}"
+
     clean_tags = []
     for t in tags:
         clean_tag = t.replace("#", "").replace("_", " ")
         if clean_tag:
             clean_tags.append(clean_tag)
-    
+
     body = {
         'snippet': {
             'title': final_title,
@@ -837,7 +904,7 @@ def upload_to_youtube(video_path, title, description, tags, is_shorts):
             'selfDeclaredMadeForKids': False
         }
     }
-    
+
     try:
         media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
         req = youtube.videos().insert(
@@ -845,17 +912,29 @@ def upload_to_youtube(video_path, title, description, tags, is_shorts):
             body=body,
             media_body=media
         )
-        
+
         res = None
         while res is None:
             status, res = req.next_chunk()
             if status:
                 print(f"   📤 تقدم الرفع: {int(status.progress() * 100)}%")
-        
+
         video_id = res.get('id')
         print(f"✅ يوتيوب ({video_type}) تم الرفع: https://youtu.be/{video_id}")
+
+        # رفع الصورة المصغرة المخصصة
+        if thumbnail_path and os.path.exists(thumbnail_path) and video_id:
+            try:
+                youtube.thumbnails().set(
+                    videoId=video_id,
+                    media_body=MediaFileUpload(thumbnail_path, mimetype='image/png')
+                ).execute()
+                print(f"🖼️ تم رفع الصورة المصغرة للفيديو {video_id}")
+            except Exception as e:
+                print(f"⚠️ فشل رفع الصورة المصغرة: {e}")
+
         return True
-    
+
     except Exception as e:
         print(f"❌ Youtube Upload Failed: {e}")
         return False
@@ -867,17 +946,17 @@ def upload_to_facebook(video_path, message_body, hashtags_list):
     if not FACEBOOK_ACCESS_TOKEN or not FACEBOOK_PAGE_ID:
         print("⚠️ فيسبوك غير مفعل - لا يوجد توكن أو Page ID")
         return False
-    
+
     print("🚀 جاري رفع الفيديو لفيسبوك...")
-    
+
     hashtags_str = " ".join(hashtags_list)
     full_message = f"{message_body}\n\n{hashtags_str}"
-    
+
     url = f"https://graph-video.facebook.com/v18.0/{FACEBOOK_PAGE_ID}/videos"
-    
+
     try:
         file_size = os.path.getsize(video_path)
-        
+
         start_response = requests.post(
             url,
             params={
@@ -886,12 +965,12 @@ def upload_to_facebook(video_path, message_body, hashtags_list):
                 'file_size': file_size
             }
         ).json()
-        
+
         session_id = start_response.get('upload_session_id')
         if not session_id:
             print(f"❌ فشل بدء رفع فيسبوك: {start_response}")
             return False
-        
+
         with open(video_path, 'rb') as f:
             transfer_response = requests.post(
                 url,
@@ -905,7 +984,7 @@ def upload_to_facebook(video_path, message_body, hashtags_list):
                     'video_file_chunk': (os.path.basename(video_path), f, 'video/mp4')
                 }
             )
-        
+
         finish_response = requests.post(
             url,
             data={
@@ -915,17 +994,68 @@ def upload_to_facebook(video_path, message_body, hashtags_list):
                 'description': full_message
             }
         ).json()
-        
+
         if finish_response.get('success'):
             print("✅ فيسبوك تم الرفع بنجاح")
             return True
         else:
             print(f"❌ فيسبوك فشل: {finish_response}")
             return False
-    
+
     except Exception as e:
         print(f"❌ Facebook Failed: {e}")
         return False
+
+
+# ====================== اختيار المحتوى حسب التناوب ======================
+def pick_content():
+    """
+    يختار محتوى التشغيلة حسب نظام التناوب:
+    فيديو عن موضوع ترندي (مع مصادره) ثم فيديو من خبر مصدر، بالتناوب.
+    لو النوع المطلوب فشل، يحاول النوع الآخر في نفس التشغيلة.
+    يرجع (payload, used_mode) أو (None, None)
+    """
+    next_type = get_next_video_type()
+    order = [next_type, 'source' if next_type == 'trending' else 'trending']
+    history = load_history()
+
+    for mode in order:
+        print(f"\n🎯 نوع التشغيلة: {'موضوع ترندي' if mode == 'trending' else 'خبر من مصدر'}")
+
+        if mode == 'trending':
+            topic = find_trending_topic(history, STRICT_KEYWORDS, BLACKLIST_KEYWORDS)
+            if topic:
+                combined_parts = [f"الموضوع الترندي: {topic['topic']} (حجم البحث: {topic['traffic']})"]
+                for art in topic['articles']:
+                    combined_parts.append(
+                        f"مقال من {art['source']} بعنوان ({art['title']}):\n{art['text'][:1600]}"
+                    )
+                payload = {
+                    'title': topic['topic'],
+                    'text': "\n\n".join(combined_parts),
+                    'url': topic['articles'][0]['url'],
+                    'source_name': f"Google Trends {topic['feed_label']}",
+                    'source_id': 0,
+                    'mode': 'trending',
+                    'slug_key': topic['slug_key'],
+                    'sources': [{'source': a['source'], 'url': a['url']}
+                                for a in topic['articles']],
+                }
+                ai = generate_ai_content(payload)
+                if ai:
+                    return payload, ai, mode
+                print("⚠️ فشل توليد المحتوى للموضوع الترندي — تجربة النوع الآخر")
+        else:
+            article = find_best_news()
+            if article:
+                article['mode'] = 'source'
+                article['sources'] = [{'source': article['source_name'], 'url': article['url']}]
+                ai = generate_ai_content(article)
+                if ai:
+                    return article, ai, mode
+                print("⚠️ فشل توليد المحتوى للخبر — تجربة النوع الآخر")
+
+    return None, None, None
 
 
 # ====================== التنفيذ الرئيسي ======================
@@ -937,74 +1067,79 @@ async def main():
     print(f"🕐 الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"📊 عدد المصادر: {len(SOURCES)}")
     print("=" * 60)
-    
+
     ensure_fonts()
-    
-    article = find_best_news()
-    if not article:
-        print("😴 لم يتم العثور على أخبار كروية جديدة في هذا المصدر.")
-        print("💡 سيتم الانتقال للمصدر التالي في التشغيل القادم.")
+
+    payload, ai, used_mode = pick_content()
+    if not payload:
+        print("😴 لا يوجد محتوى مناسب في هذه التشغيلة (لا ترند ولا أخبار جديدة).")
         return
-    
-    print(f"\n📰 الخبر المختار:")
-    print(f"   المصدر: [{article['source_id']}] {article['source_name']}")
-    print(f"   العنوان: {article['title'][:80]}...")
-    print(f"   الرابط: {article['url']}")
-    print(f"   طول المحتوى: {len(article['text'])} حرف")
-    
-    ai = generate_ai_content(article)
-    if not ai:
-        print("❌ فشل إنشاء المحتوى بالذكاء الاصطناعي")
-        return
-    
+
+    print(f"\n📰 المحتوى المختار ({'ترندي' if used_mode == 'trending' else 'من مصدر'}):")
+    print(f"   المصدر: {payload['source_name']}")
+    print(f"   العنوان: {payload['title'][:80]}")
+    # ملحوظة: المصادر تُستخدم كأساس للمعلومات فقط ولا تُذكر في الوصف (طلب صاحب القناة)
+
     print(f"\n✍️ المحتوى المُنشأ:")
     print(f"   عنوان الفيديو: {ai['video_title']}")
     print(f"   عنوان الشورتس: {ai['shorts_title']}")
     print(f"   طول سكريبت الفيديو: {len(ai['video_script'])} حرف")
     print(f"   طول سكريبت الشورتس: {len(ai['shorts_script'])} حرف")
     print(f"   عدد الهاشتاقات: {len(ai['hashtags'])}")
-    
-    img_file = "image.jpg"
+
     video_audio = "video_audio.mp3"
     shorts_audio = "shorts_audio.mp3"
     video_file = "video.mp4"
     shorts_file = "shorts.mp4"
-    
-    print("\n📥 تحميل الصورة...")
-    if not download_and_flip_image(article['image'], img_file):
-        print("❌ فشل تحميل الصورة")
-        save_failed_link(article['url'], article['source_name'], "فشل تحميل صورة الخبر")
-        return
-    enhance_image(img_file)
-    
+    thumbnail_file = "thumbnail.png"
+
+    # الصورة المصغرة المخصصة بالهوية البصرية
+    print("\n🖼️ تصميم الصورة المصغرة...")
+    try:
+        create_thumbnail(ai['video_title'], thumbnail_file)
+    except Exception as e:
+        print(f"⚠️ فشل تصميم الصورة المصغرة: {e}")
+        thumbnail_file = None
+
     print("\n🎙️ توليد الصوت للفيديو الطويل...")
     await generate_audio(ai['video_script'], video_audio)
-    
+
     print("\n🎙️ توليد الصوت للشورتس...")
     await generate_audio(ai['shorts_script'], shorts_audio)
-    
+    enforce_shorts_duration(shorts_audio)
+
+    kicker = "الأكثر بحثاً الآن" if used_mode == 'trending' else "آخر الأخبار"
+
+    long_slides = derive_slide_lines(ai['video_script'], MAX_LONG_SLIDES)
+    short_slides = derive_slide_lines(ai['shorts_script'], MAX_SHORT_SLIDES)
+    print(f"\n🖼️ الشرائح: {len(long_slides)} للفيديو الطويل، {len(short_slides)} للشورتس")
+
     print("\n🎬 إنتاج الفيديو الطويل...")
-    video_success = create_zooming_video(
-        img_file,
+    video_success = create_slideshow_video(
+        long_slides,
         video_audio,
         video_file,
         VIDEO_WIDTH,
         VIDEO_HEIGHT,
         is_shorts=False,
-        title=ai['video_title']
+        title=ai['video_title'],
+        kicker=kicker
     )
-    
+
     print("\n🎬 إنتاج الشورتس...")
-    shorts_success = create_zooming_video(
-        img_file,
+    shorts_success = create_slideshow_video(
+        short_slides,
         shorts_audio,
         shorts_file,
         SHORTS_WIDTH,
         SHORTS_HEIGHT,
         is_shorts=True,
-        title=ai['shorts_title']
+        title=ai['shorts_title'],
+        kicker=kicker
     )
-    
+
+    something_uploaded = False
+
     if video_success:
         print("\n📤 رفع الفيديو الطويل...")
         yt_ok = upload_to_youtube(
@@ -1012,14 +1147,17 @@ async def main():
             ai['video_title'],
             ai['video_description'],
             ai['hashtags'],
-            is_shorts=False
+            is_shorts=False,
+            thumbnail_path=thumbnail_file
         )
+        something_uploaded = something_uploaded or yt_ok
         if not yt_ok:
-            save_failed_link(article['url'], article['source_name'], "فشل رفع الفيديو الطويل لليوتيوب")
+            save_failed_link(payload['url'], payload['source_name'], "فشل رفع الفيديو الطويل لليوتيوب")
         fb_ok = upload_to_facebook(video_file, ai['facebook_post'], ai['hashtags'])
+        something_uploaded = something_uploaded or fb_ok
         if not fb_ok:
-            save_failed_link(article['url'], article['source_name'], "فشل رفع الفيديو لفيسبوك")
-    
+            save_failed_link(payload['url'], payload['source_name'], "فشل رفع الفيديو لفيسبوك")
+
     if shorts_success:
         print("\n📤 رفع الشورتس...")
         shorts_description = ai['shorts_script']
@@ -1028,21 +1166,36 @@ async def main():
             ai['shorts_title'],
             shorts_description,
             ai['hashtags'],
-            is_shorts=True
+            is_shorts=True,
+            thumbnail_path=thumbnail_file
         )
+        something_uploaded = something_uploaded or shorts_ok
         if not shorts_ok:
-            save_failed_link(article['url'], article['source_name'], "فشل رفع الشورتس لليوتيوب")
-    
-    print("\n💾 حفظ الرابط في الهيستوري...")
-    save_history(article['url'], article['source_name'])
-    
+            save_failed_link(payload['url'], payload['source_name'], "فشل رفع الشورتس لليوتيوب")
+
+    if video_success or shorts_success:
+        print("\n💾 حفظ الموضوع في الهيستوري (منع التكرار)...")
+        if used_mode == 'trending':
+            save_history(payload['slug_key'], payload['source_name'])
+            for s in payload['sources']:
+                save_history(s['url'], s['source'])
+        else:
+            save_history(payload['url'], payload['source_name'])
+
+        # قلب التناوب للتشغيلة القادمة
+        save_next_video_type('source' if used_mode == 'trending' else 'trending')
+    else:
+        print("⚠️ فشل إنتاج الفيديوهات — لن يتم حفظ الهيستوري ولا تغيير التناوب")
+
     print("\n🧹 تنظيف الملفات المؤقتة...")
-    files_to_remove = [img_file, video_audio, shorts_audio, video_file, shorts_file]
+    files_to_remove = [video_audio, shorts_audio, video_file, shorts_file]
+    if thumbnail_file:
+        files_to_remove.append(thumbnail_file)
     for f in files_to_remove:
         if os.path.exists(f):
             os.remove(f)
             print(f"   ✓ تم حذف: {f}")
-    
+
     print("\n" + "=" * 60)
     print("✅ اكتمل التنفيذ بنجاح")
     print("=" * 60)
