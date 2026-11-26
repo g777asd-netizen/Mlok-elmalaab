@@ -37,9 +37,10 @@ from moviepy.editor import (AudioFileClip, ImageClip,
                             CompositeVideoClip, CompositeAudioClip,
                             concatenate_videoclips)
 from groq import Groq
-from branding import (create_intro_card, create_outro_card,
-                      create_content_slide, create_thumbnail, ensure_fonts)
+from branding import (create_thumbnail, ensure_fonts, build_animated_clip)
 from gemini_voice import generate_voice
+from script_prompt import SYSTEM_MSG, build_prompt, polish_script, clean_script_keep_tashkeel
+from pronunciation import script_problems, numbers_to_words
 from trending import find_trending_topic
 from music_bed import render_music_bed
 
@@ -65,8 +66,8 @@ CHANNEL_NAME_EN = "Kings of the Stadium"
 CROSSFADE_SEC = 0.5
 INTRO_DURATION = 3.0
 OUTRO_DURATION = 3.5
-MAX_LONG_SLIDES = 14
-MAX_SHORT_SLIDES = 7
+MAX_LONG_SLIDES = 40
+MAX_SHORT_SLIDES = 12
 MUSIC_VOLUME = 0.16       # مستوى الموسيقى تحت التعليق الصوتي
 
 # ====================== موديلات Groq المدعومة فقط (محدث سبتمبر 2026) ======================
@@ -374,6 +375,20 @@ def clean_text_strict(text):
     return text
 
 
+_META_PAT = re.compile(
+    r"(ذكاء\s*اصطناعي|الذكاء\s*الاصطناعي|نقلا\s*عن|نقلاً\s*عن|وفقا\s*ل|وفقاً\s*ل|"
+    r"بحسب\s*(موقع|صحيفة|تقرير)|حسب\s*(موقع|صحيفة|تقرير)|المصدر|المصادر|مصدر\s*الخبر|"
+    r"جوجل\s*ترند|Google|Trends|\bAI\b|ChatGPT|Groq|Gemini)", re.I)
+
+def strip_meta_mentions(text):
+    """يشيل أي جملة بتذكر الذكاء الاصطناعي أو مصدر الخبر من الوصف/البوست."""
+    if not text:
+        return ""
+    parts = re.split(r"(?<=[\.\!\?؟\n])\s+", text)
+    kept = [p for p in parts if not _META_PAT.search(p)]
+    return re.sub(r"\s+", " ", " ".join(kept)).strip()
+
+
 # ====================== استخراج المحتوى (نص فقط — بلا صور) ======================
 def get_article_content(url):
     """استخراج عنوان ومحتوى المقال من الرابط — لا يتم تحميل أي صور"""
@@ -524,60 +539,7 @@ def generate_ai_content(article):
     if len(article_text) > MAX_ARTICLE_CHARS:
         article_text = article_text[:MAX_ARTICLE_CHARS]
 
-    prompt = f"""
-أنت محلل رياضي محترف ومعلق كروي خبير.
-سأعطيك خبر رياضي، مطلوب منك إنشاء محتوى بالعامية المصرية بأسلوب معلق كروي شعبي طبيعي.
-
-النص الأصلي:
-العنوان: {article['title']}
-المحتوى: {article_text}
-
-التعليمات الإلزامية الصارمة:
-1. لا تخترع أي معلومات غير موجودة في النص الأصلي إطلاقاً
-2. استخدم التفاصيل الموجودة في النص دون حشو
-3. اقرأ الخبر كاملاً وأعد صياغته بأسلوب احترافي
-4. اكتب بأسلوب معلق كروي مصري شعبي (عامية مصرية أصيلة) كأنك بتحكي لصاحبك، بجمل قصيرة وحيوية
-   - اكتب أسماء اللاعبين والأندية الأجنبية بالنطق المصري المتداول (بيلينجهام مش بيلينغهام، جولر مش غولر)
-   - اكتب الأرقام بالكلمات مش بالأرقام عشان التعليق الصوتي ينطقها صح
-5. النص يجب أن يكون متوسط الطول (700-900 كلمة) لتغطية 3-4 دقائق
-6. البنية المطلوبة:
-   - Hook: جملة افتتاحية قوية جداً تجذب المشاهد فوراً
-   - Body: شرح مفصل للخبر مع تحليل ودقة
-   - CTA: دعوة للاشتراك والتفاعل في النهاية
-
-7. العنوان يجب أن يكون:
-   - 50-60 حرف فقط
-   - يحتوي كلمات مفتاحية قوية للسيو
-   - جذاب ومثير للفضول
-
-8. الوصف يجب أن يكون:
-   - 120 كلمة تقريباً
-   - يبدأ بـ Hook قوي
-   - يحتوي Body مختصر
-   - ينتهي بـ CTA
-
-9. الهاشتاقات:
-   - 15 هاشتاق بالضبط
-   - كلها مرتبطة بمحتوى الفيديو والخبر
-   - باللغة العربية
-
-10. نص الشورتس:
-    - 30-45 ثانية فقط
-    - Hook + Body + CTA
-    - بدون هاشتاقات في النص
-    - مختصر ومركز
-
-المطلوب بصيغة JSON فقط:
-{{
-    "video_title": "عنوان جذاب للفيديو الطويل (50-60 حرف) يحتوي كلمات مفتاحية قوية",
-    "video_script": "النص الكامل للفيديو (Hook + Body + CTA) - 700-900 كلمة",
-    "video_description": "وصف احترافي 120 كلمة (Hook + Body + CTA)",
-    "shorts_title": "عنوان مختصر وجذاب للشورتس (40 حرف)",
-    "shorts_script": "نص مختصر للشورتس (Hook + Body + CTA) - 30-45 ثانية فقط بدون هاشتاقات",
-    "hashtags": ["#هاشتاق1", "#هاشتاق2", "... 15 هاشتاق مرتبط بالمحتوى"],
-    "facebook_post": "منشور فيسبوك جذاب مع إيموجي"
-}}
-"""
+    prompt = build_prompt(article['title'], article_text)
 
     for model in GROQ_MODELS:
         try:
@@ -588,14 +550,14 @@ def generate_ai_content(article):
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a helpful assistant that outputs strictly valid JSON. You write scripts in Egyptian colloquial Arabic (عامية مصرية) like a popular football commentator. Titles, descriptions and hashtags stay in standard Arabic for SEO. Never invent information not in the source."
+                        "content": SYSTEM_MSG
                     },
                     {
                         "role": "user",
                         "content": prompt
                     }
                 ],
-                temperature=0.7,
+                temperature=0.4,
                 max_tokens=4000,
                 response_format={"type": "json_object"}
             )
@@ -603,11 +565,21 @@ def generate_ai_content(article):
             content = json.loads(completion.choices[0].message.content)
 
             content['video_title'] = clean_text_strict(content.get('video_title', ''))
-            content['video_script'] = clean_text_strict(content.get('video_script', ''))
-            content['video_description'] = clean_text_strict(content.get('video_description', ''))
+            # تدقيق مصري + أرقام بالكلمات + فحص المشاكل قبل التنظيف
+            for _k in ("video_script", "shorts_script"):
+                _raw = content.get(_k, '') or ''
+                _raw = polish_script(client, model, numbers_to_words(_raw), article_text)
+                content[_k] = numbers_to_words(_raw)
+            _probs = script_problems(content["video_script"], article_text) + \
+                     script_problems(content["shorts_script"], article_text)
+            if _probs:
+                print(f"⚠️ مشاكل في سكريبت {model}: {_probs} - تجربة الموديل التالي")
+                continue
+            content['video_script'] = clean_script_keep_tashkeel(content['video_script'])
+            content['video_description'] = strip_meta_mentions(clean_text_strict(content.get('video_description', '')))
             content['shorts_title'] = clean_text_strict(content.get('shorts_title', ''))
-            content['shorts_script'] = clean_text_strict(content.get('shorts_script', ''))
-            content['facebook_post'] = clean_text_strict(content.get('facebook_post', ''))
+            content['shorts_script'] = clean_script_keep_tashkeel(content.get('shorts_script', ''))
+            content['facebook_post'] = strip_meta_mentions(clean_text_strict(content.get('facebook_post', '')))
 
             tags = []
             for t in content.get('hashtags', []):
@@ -758,48 +730,15 @@ def create_slideshow_video(slide_texts, audio_path, output_path, width, height,
         content_dur = voice.duration
         print(f"⏱️ مدة التعليق: {content_dur:.1f} ثانية ({content_dur/60:.2f} دقيقة)")
 
-        # توليد صور الشرائح
         durations = _slide_durations(slide_texts, content_dur)
-        total = len(slide_texts)
-        for i, (text, dur) in enumerate(zip(slide_texts, durations), 1):
-            path = f"slide_{'s' if is_shorts else 'v'}_{i:02d}.png"
-            create_content_slide(text, path, width, height, index=i, total=total,
-                                 kicker=kicker)
-            slide_files.append(path)
-        print(f"🖼️ تم توليد {total} شريحة أصلية")
-
-        def ken_burns(path, dur):
-            img = ImageClip(path)
-            zoom_total = 0.06 if not is_shorts else 0.08
-            return (img
-                    .resize(lambda t: 1 + zoom_total * (t / max(dur, 0.1)))
-                    .set_position('center')
-                    .set_duration(dur + CROSSFADE_SEC))
-
-        clips = []
-        if not is_shorts:
-            date_str = datetime.now().strftime("%Y/%m/%d")
-            intro_path = create_intro_card(title or CHANNEL_NAME_AR, "intro_card.png",
-                                           width, height, date_str)
-            slide_files.append(intro_path)
-            clips.append(ImageClip(intro_path).set_duration(INTRO_DURATION + CROSSFADE_SEC))
-
-        for path, dur in zip(slide_files[:total], durations):
-            clip = ken_burns(path, dur)
-            if clips:
-                clip = clip.crossfadein(CROSSFADE_SEC)
-            clips.append(clip)
-
-        if not is_shorts:
-            outro_path = create_outro_card("outro_card.png", width, height)
-            slide_files.append(outro_path)
-            clips.append(ImageClip(outro_path)
-                         .set_duration(OUTRO_DURATION + CROSSFADE_SEC)
-                         .crossfadein(CROSSFADE_SEC))
-
-        final = concatenate_videoclips(clips, method="compose", padding=-CROSSFADE_SEC)
-        total_dur = final.duration
-        print(f"⏱️ المدة الكلية: {total_dur:.1f} ثانية")
+        intro_d = 0.0 if is_shorts else INTRO_DURATION
+        outro_d = 0.0 if is_shorts else OUTRO_DURATION
+        date_str = datetime.now().strftime("%Y/%m/%d")
+        final, total_dur = build_animated_clip(
+            slide_texts, durations, width, height, is_shorts,
+            title=title or CHANNEL_NAME_AR, kicker=kicker, date_str=date_str,
+            intro=intro_d, outro=outro_d)
+        print(f"🎞️ {len(slide_texts)} مشهد متحرك — المدة الكلية: {total_dur:.1f} ثانية")
 
         # موسيقى خلفية أصلية بطول الفيديو بالظبط
         music_path = "music_bed.wav"
@@ -817,8 +756,8 @@ def create_slideshow_video(slide_texts, audio_path, output_path, width, height,
             codec="libx264",
             audio_codec="aac",
             audio_bitrate="192k",
-            bitrate="8000k",
-            preset="slow",
+            bitrate="6000k",
+            preset="veryfast",
             threads=4,
             ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
             verbose=False,
@@ -1025,10 +964,10 @@ def pick_content():
         if mode == 'trending':
             topic = find_trending_topic(history, STRICT_KEYWORDS, BLACKLIST_KEYWORDS)
             if topic:
-                combined_parts = [f"الموضوع الترندي: {topic['topic']} (حجم البحث: {topic['traffic']})"]
+                combined_parts = [f"الموضوع الترندي: {topic['topic']}"]
                 for art in topic['articles']:
                     combined_parts.append(
-                        f"مقال من {art['source']} بعنوان ({art['title']}):\n{art['text'][:1600]}"
+                        f"مقال بعنوان ({art['title']}):\n{art['text'][:1600]}"
                     )
                 payload = {
                     'title': topic['topic'],
@@ -1110,8 +1049,8 @@ async def main():
 
     kicker = "الأكثر بحثاً الآن" if used_mode == 'trending' else "آخر الأخبار"
 
-    long_slides = derive_slide_lines(ai['video_script'], MAX_LONG_SLIDES)
-    short_slides = derive_slide_lines(ai['shorts_script'], MAX_SHORT_SLIDES)
+    long_slides = derive_slide_lines(ai['video_script'], MAX_LONG_SLIDES, max_chars=120)
+    short_slides = derive_slide_lines(ai['shorts_script'], MAX_SHORT_SLIDES, max_chars=90)
     print(f"\n🖼️ الشرائح: {len(long_slides)} للفيديو الطويل، {len(short_slides)} للشورتس")
 
     print("\n🎬 إنتاج الفيديو الطويل...")
