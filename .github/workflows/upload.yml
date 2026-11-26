@@ -5,8 +5,9 @@ name: Arabic Football Bot
 # بدل النشر كل ساعة: جودة أعلى والتزام بسياسة يوتيوب ضد المحتوى المكرر المكثف
 on:
   schedule:
-    - cron: '0 10,15,19 * * *'    # 12:00 و 17:00 و 21:00 القاهرة
-    - cron: '30 21 * * *'         # 23:30 القاهرة (بعد المباريات المسائية)
+    # احتياطي فقط: بعد الميعاد الأساسي (cron-job.org) بـ ٢٠ دقيقة وبدقائق غير مزدحمة
+    - cron: '23 10,15,19 * * *'   # 12:23 و 17:23 و 21:23 القاهرة
+    - cron: '53 21 * * *'         # 23:53 القاهرة
   workflow_dispatch:
     inputs:
       url:
@@ -22,6 +23,11 @@ on:
 
 permissions:
   contents: write
+  actions: read
+
+concurrency:
+  group: arabic-football-bot
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -29,24 +35,39 @@ jobs:
     timeout-minutes: 90
 
     steps:
+    - name: Skip backup schedule if a run just happened
+      id: guard
+      if: github.event_name == 'schedule'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        since=$(date -u -d '60 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+        n=$(gh api "repos/${{ github.repository }}/actions/runs?created=>=$since&per_page=50" --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.name=="Arabic Football Bot") | select(.status!="completed" or .conclusion=="success")] | length' || echo 0)
+        echo "recent runs: $n"
+        if [ "$n" -gt 0 ]; then echo "skip=true" >> $GITHUB_OUTPUT; fi
+
     - name: Checkout repository
+      if: steps.guard.outputs.skip != 'true'
       uses: actions/checkout@v4
       with:
         persist-credentials: true
         token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Set up Python
+      if: steps.guard.outputs.skip != 'true'
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
     - name: Install System Dependencies
+      if: steps.guard.outputs.skip != 'true'
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg imagemagick fonts-dejavu-core fonts-freefont-ttf
         sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml || true
 
     - name: Install Python Packages
+      if: steps.guard.outputs.skip != 'true'
       run: |
         pip install --upgrade pip
         pip install requests beautifulsoup4 Pillow numpy
@@ -56,6 +77,7 @@ jobs:
         pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
 
     - name: Run Bot
+      if: steps.guard.outputs.skip != 'true'
       env:
         GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
@@ -70,7 +92,7 @@ jobs:
       run: python youtube_arabic.py
 
     - name: Commit and Push Changes
-      if: always()
+      if: always() && steps.guard.outputs.skip != 'true'
       run: |
         git config --local user.name "Arabic Football Bot"
         git config --local user.email "bot@github.com"
