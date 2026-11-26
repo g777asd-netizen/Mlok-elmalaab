@@ -40,8 +40,11 @@ from groq import Groq
 from branding import (create_thumbnail, ensure_fonts, build_animated_clip)
 from gemini_voice import generate_voice
 from script_prompt import SYSTEM_MSG, build_prompt, polish_script, clean_script_keep_tashkeel
-from pronunciation import script_problems, numbers_to_words
-from trending import find_trending_topic
+from pronunciation import script_problems, numbers_to_words, egyptianize
+from script_review import gemini_review
+from visuals import validate_visuals
+from trending import find_trending_topic, trend_slug
+import sources_extra
 from music_bed import render_music_bed
 
 # ====================== المتغيرات البيئة والإعدادات ======================
@@ -539,7 +542,9 @@ def generate_ai_content(article):
     if len(article_text) > MAX_ARTICLE_CHARS:
         article_text = article_text[:MAX_ARTICLE_CHARS]
 
-    prompt = build_prompt(article['title'], article_text)
+    n = len(article_text)
+    words = "700-900" if n >= 1500 else ("400-550" if n >= 700 else "200-300")
+    prompt = build_prompt(article['title'], article_text, words=words)
 
     for model in GROQ_MODELS:
         try:
@@ -568,13 +573,16 @@ def generate_ai_content(article):
             # تدقيق مصري + أرقام بالكلمات + فحص المشاكل قبل التنظيف
             for _k in ("video_script", "shorts_script"):
                 _raw = content.get(_k, '') or ''
-                _raw = polish_script(client, model, numbers_to_words(_raw), article_text)
-                content[_k] = numbers_to_words(_raw)
+                _raw = polish_script(client, model, numbers_to_words(_raw), article_text)   # مراجعة ١ (Groq)
+                _raw = gemini_review(_raw, article_text, label=_k)                          # مراجعة ٢ (Gemini)
+                content[_k] = numbers_to_words(egyptianize(_raw))
             _probs = script_problems(content["video_script"], article_text) + \
                      script_problems(content["shorts_script"], article_text)
             if _probs:
                 print(f"⚠️ مشاكل في سكريبت {model}: {_probs} - تجربة الموديل التالي")
                 continue
+            content['visuals'] = validate_visuals(content.get('visuals'), article_text)
+            print(f"🎨 بيانات الرسومات المقبولة: {list(content['visuals'].keys()) or 'مفيش (هتستخدم مشاهد عامة)'}")
             content['video_script'] = clean_script_keep_tashkeel(content['video_script'])
             content['video_description'] = strip_meta_mentions(clean_text_strict(content.get('video_description', '')))
             content['shorts_title'] = clean_text_strict(content.get('shorts_title', ''))
@@ -714,7 +722,7 @@ def _slide_durations(slide_texts, total_seconds):
 
 # ====================== إنشاء الفيديو بالشرائح + الموسيقى ======================
 def create_slideshow_video(slide_texts, audio_path, output_path, width, height,
-                           is_shorts, title=None, kicker=""):
+                           is_shorts, title=None, kicker="", visuals=None):
     """
     فيديو من شرائح أصلية التصميم (بدون أي صورة خارجية):
     بطاقة افتتاحية + شرائح المحتوى بحركة زوم هادئة وانتقالات ناعمة + بطاقة ختامية،
@@ -737,7 +745,7 @@ def create_slideshow_video(slide_texts, audio_path, output_path, width, height,
         final, total_dur = build_animated_clip(
             slide_texts, durations, width, height, is_shorts,
             title=title or CHANNEL_NAME_AR, kicker=kicker, date_str=date_str,
-            intro=intro_d, outro=outro_d)
+            intro=intro_d, outro=outro_d, visuals=visuals)
         print(f"🎞️ {len(slide_texts)} مشهد متحرك — المدة الكلية: {total_dur:.1f} ثانية")
 
         # موسيقى خلفية أصلية بطول الفيديو بالظبط
@@ -947,6 +955,43 @@ def upload_to_facebook(video_path, message_body, hashtags_list):
 
 
 # ====================== اختيار المحتوى حسب التناوب ======================
+def pick_manual_content():
+    """
+    تشغيل يدوي: رابط (أي صيغة) أو كلمة مفتاحية. مفيش رجوع للتناوب التلقائي.
+    لو الاتنين اتحطوا، الرابط له الأولوية. يرجع (payload, ai, 'manual') أو يوقف التشغيلة برسالة واضحة.
+    """
+    url_in = (os.environ.get('MANUAL_URL') or '').strip()
+    kw_in = (os.environ.get('MANUAL_KEYWORD') or '').strip()
+    if url_in and kw_in:
+        print("ℹ️ اتحط رابط وكلمة مفتاحية معاً، هستخدم الرابط وأتجاهل الكلمة.")
+
+    if url_in:
+        print(f"\n🎯 تشغيل يدوي بالرابط")
+        try:
+            payload = sources_extra.extract_from_url(url_in)
+        except sources_extra.ExtractError as e:
+            print(f"❌ {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ خطأ غير متوقع في قراءة الرابط: {e}")
+            sys.exit(1)
+        if payload['slug_key'] in load_history():
+            print("ℹ️ الرابط ده اتعمل عنه فيديو قبل كده، بس هكمل لأنك طلبته بنفسك.")
+    else:
+        print(f"\n🎯 تشغيل يدوي بالكلمة المفتاحية: {kw_in}")
+        payload = sources_extra.search_keyword(kw_in, load_history(), trend_slug)
+        if not payload:
+            print("❌ ملقتش خبر جديد مناسب بالكلمة دي (أو كلها اتعمل عنها فيديو قبل كده أو المواقع حاجبة القراءة). جرب كلمة تانية.")
+            sys.exit(1)
+
+    payload['mode'] = 'manual'
+    ai = generate_ai_content(payload)
+    if not ai:
+        print("❌ فشل توليد السكريبت من المحتوى ده (غالباً المحتوى قليل أو الموديلات رفضت النص).")
+        sys.exit(1)
+    return payload, ai, 'manual'
+
+
 def pick_content():
     """
     يختار محتوى التشغيلة حسب نظام التناوب:
@@ -962,7 +1007,7 @@ def pick_content():
         print(f"\n🎯 نوع التشغيلة: {'موضوع ترندي' if mode == 'trending' else 'خبر من مصدر'}")
 
         if mode == 'trending':
-            topic = find_trending_topic(history, STRICT_KEYWORDS, BLACKLIST_KEYWORDS)
+            topic = find_trending_topic(history, STRICT_KEYWORDS, BLACKLIST_KEYWORDS, get_service=get_youtube_service)
             if topic:
                 combined_parts = [f"الموضوع الترندي: {topic['topic']}"]
                 for art in topic['articles']:
@@ -973,7 +1018,7 @@ def pick_content():
                     'title': topic['topic'],
                     'text': "\n\n".join(combined_parts),
                     'url': topic['articles'][0]['url'],
-                    'source_name': f"Google Trends {topic['feed_label']}",
+                    'source_name': topic['feed_label'],
                     'source_id': 0,
                     'mode': 'trending',
                     'slug_key': topic['slug_key'],
@@ -1009,12 +1054,15 @@ async def main():
 
     ensure_fonts()
 
-    payload, ai, used_mode = pick_content()
+    if (os.environ.get('MANUAL_URL') or '').strip() or (os.environ.get('MANUAL_KEYWORD') or '').strip():
+        payload, ai, used_mode = pick_manual_content()
+    else:
+        payload, ai, used_mode = pick_content()
     if not payload:
         print("😴 لا يوجد محتوى مناسب في هذه التشغيلة (لا ترند ولا أخبار جديدة).")
         return
 
-    print(f"\n📰 المحتوى المختار ({'ترندي' if used_mode == 'trending' else 'من مصدر'}):")
+    print(f"\n📰 المحتوى المختار ({ {'trending':'ترندي','manual':'يدوي'}.get(used_mode,'من مصدر') }):")
     print(f"   المصدر: {payload['source_name']}")
     print(f"   العنوان: {payload['title'][:80]}")
     # ملحوظة: المصادر تُستخدم كأساس للمعلومات فقط ولا تُذكر في الوصف (طلب صاحب القناة)
@@ -1062,7 +1110,8 @@ async def main():
         VIDEO_HEIGHT,
         is_shorts=False,
         title=ai['video_title'],
-        kicker=kicker
+        kicker=kicker,
+        visuals=ai.get('visuals')
     )
 
     print("\n🎬 إنتاج الشورتس...")
@@ -1074,7 +1123,8 @@ async def main():
         SHORTS_HEIGHT,
         is_shorts=True,
         title=ai['shorts_title'],
-        kicker=kicker
+        kicker=kicker,
+        visuals=ai.get('visuals')
     )
 
     something_uploaded = False
@@ -1114,15 +1164,19 @@ async def main():
 
     if video_success or shorts_success:
         print("\n💾 حفظ الموضوع في الهيستوري (منع التكرار)...")
-        if used_mode == 'trending':
+        if used_mode in ('trending', 'manual'):
             save_history(payload['slug_key'], payload['source_name'])
             for s in payload['sources']:
-                save_history(s['url'], s['source'])
+                if s['url'] != payload['slug_key']:
+                    save_history(s['url'], s['source'])
         else:
             save_history(payload['url'], payload['source_name'])
 
-        # قلب التناوب للتشغيلة القادمة
-        save_next_video_type('source' if used_mode == 'trending' else 'trending')
+        # قلب التناوب للتشغيلة القادمة — التشغيل اليدوي ميغيّرش التناوب
+        if used_mode == 'manual':
+            print("🔁 تشغيل يدوي: التناوب التلقائي ما اتغيرش")
+        else:
+            save_next_video_type('source' if used_mode == 'trending' else 'trending')
     else:
         print("⚠️ فشل إنتاج الفيديوهات — لن يتم حفظ الهيستوري ولا تغيير التناوب")
 
