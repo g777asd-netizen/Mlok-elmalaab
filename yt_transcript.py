@@ -106,7 +106,16 @@ def via_gemini(url):
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=key)
-    models = [m.strip() for m in (os.environ.get("GEMINI_VIDEO_MODELS") or "gemini-2.5-flash,gemini-2.5-flash-lite").split(",") if m.strip()]
+    try:
+        from llm_utils import gemini_models, mark_dead, is_dead
+        models = [m for m in gemini_models() if not is_dead(m)]
+    except Exception:
+        models = ["gemini-3.8-flash", "gemini-3.6-flash"]
+        mark_dead = lambda *a, **k: None
+    if os.environ.get("GEMINI_VIDEO_MODELS"):
+        models = [m.strip() for m in os.environ["GEMINI_VIDEO_MODELS"].split(",") if m.strip()]
+    vid = video_id(url)
+    clean_url = f"https://www.youtube.com/watch?v={vid}" if vid else url
     last = None
     for m in models:
         try:
@@ -114,7 +123,7 @@ def via_gemini(url):
                                               media_resolution="MEDIA_RESOLUTION_LOW")
             r = client.models.generate_content(
                 model=m, config=cfg,
-                contents=types.Content(parts=[types.Part(file_data=types.FileData(file_uri=url)),
+                contents=types.Content(parts=[types.Part(file_data=types.FileData(file_uri=clean_url)),
                                               types.Part(text=GEMINI_ASK)]))
             t = _clean(r.text or "")
             if t and "NO_SPEECH" not in t[:40]:
@@ -122,6 +131,7 @@ def via_gemini(url):
             last = "no speech"
         except Exception as e:
             last = str(e)[:150]
+            mark_dead(m, e)
             print(f"   ⚠️ Gemini {m} مقدرش يقرا الفيديو: {last}")
     raise TranscriptError(last or "gemini failed")
 
@@ -130,6 +140,15 @@ def get_youtube_text(url, oembed_title=""):
     """يرجع dict(title, text, method, duration) أو يرمي TranscriptError."""
     title, duration, desc = oembed_title, 0, ""
     text, method = "", ""
+    pasted = (os.environ.get("MANUAL_TEXT") or "").strip()
+    if len(pasted) >= 300:
+        print(f"   📋 هستخدم النص اللي إنت لصقته ({len(pasted)} حرف) من غير ما أدخل يوتيوب")
+        if not title:
+            try:
+                title = (requests.get("https://www.youtube.com/oembed", params={"format": "json", "url": url}, timeout=10).json().get("title") or "")
+            except Exception:
+                pass
+        return {"title": title, "text": pasted[:MAX_CHARS], "method": "manual-text", "duration": 0, "description": ""}
     for name, fn in (("yt-dlp", via_ytdlp), ("transcript-api", via_transcript_api), ("gemini-video", via_gemini)):
         try:
             r = fn(url)
@@ -147,5 +166,5 @@ def get_youtube_text(url, oembed_title=""):
         raise TranscriptError(
             "مقدرتش أجيب نص الكلام الحقيقي للفيديو ده (يوتيوب حاجب GitHub وجوجل مقدرش يقراه). "
             "مش هكتب سكريبت من العنوان بس عشان ميتألفش كلام. الحلول: ضيف سر YT_COOKIES أو YT_PROXY في GitHub، "
-            "أو جرب فيديو عليه ترجمة، أو استخدم رابط مقال عن نفس الموضوع.")
+            "أو الصق ملخص/نص الفيديو في خانة text وقت تشغيل الورك فلو، أو استخدم رابط مقال عن نفس الموضوع.")
     return {"title": title, "text": text[:MAX_CHARS], "method": method, "duration": duration, "description": desc[:1500]}
