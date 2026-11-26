@@ -106,13 +106,68 @@ def fetch_article_text(url):
         return None
 
 
-def find_trending_topic(history_links, keywords, blacklist):
+def _try_trend_set(label, trends, history_links, keywords, blacklist, start):
+    """يفحص قائمة ترندات من مصدر واحد ويرجع أول موضوع كروي جديد صالح"""
+    for trend in trends:
+        if time.time() - start > MAX_TREND_SECONDS:
+            print("⏱️ انتهى الوقت المخصص لرصد الترند")
+            return "timeout"
+
+        topic = trend['topic']
+        haystack = topic + " " + " ".join(n['title'] for n in trend['news'])
+        if not _matches(haystack, keywords, blacklist):
+            continue
+
+        slug_key = "trend:" + trend_slug(topic)
+        if slug_key in history_links:
+            print(f"   ⏭️ موضوع مكرر (اتعمل عنه فيديو قبل كده): {topic}")
+            continue
+
+        print(f"🔥 موضوع كروي ترندي ({label}): {topic} ({trend['traffic']})")
+
+        articles = []
+        for news in trend['news']:
+            if len(articles) >= MAX_ARTICLES_PER_TREND:
+                break
+            url = news['url']
+            if 'news.google.com' in url:
+                from sources_extra import resolve_news_url
+                url = resolve_news_url(url)
+                if not url:
+                    continue
+            if url in history_links:
+                continue
+            text = fetch_article_text(url)
+            if text and any(text[:200] == a['text'][:200] for a in articles):
+                continue
+            if text:
+                articles.append({
+                    'title': news['title'],
+                    'url': url,
+                    'source': news.get('source') or 'مصدر إخباري',
+                    'text': text,
+                })
+
+        if not articles:
+            print(f"   😔 لا توجد مقالات مصدر صالحة للموضوع: {topic}")
+            continue
+
+        return {
+            'topic': topic,
+            'traffic': trend['traffic'],
+            'feed_label': label,
+            'slug_key': slug_key,
+            'articles': articles,
+        }
+    return None
+
+
+def find_trending_topic(history_links, keywords, blacklist, get_service=None):
     """
     يرصد أول موضوع كروي ترندي غير مكرر مع مقالات مصدر كافية.
-    يرجع dict:
-      topic, traffic, feed_label, slug_key (trend:<slug>),
-      articles: [{title, url, source, text}]
-    أو None لو لا يوجد موضوع صالح.
+    المصادر بالترتيب: Google Trends (مصر ثم السعودية) ثم المصادر الإضافية
+    (ترند يوتيوب الرسمي، Google News، Bing News).
+    يرجع dict: topic, traffic, feed_label, slug_key, articles  أو None
     """
     start = time.time()
 
@@ -128,53 +183,24 @@ def find_trending_topic(history_links, keywords, blacklist):
         except Exception as e:
             print(f"⚠️ فشل جلب خلاصة الترند ({feed_label}): {e}")
             continue
+        res = _try_trend_set("Google Trends " + feed_label, trends, history_links, keywords, blacklist, start)
+        if res == "timeout":
+            return None
+        if res:
+            return res
 
-        for trend in trends:
-            if time.time() - start > MAX_TREND_SECONDS:
-                print("⏱️ انتهى الوقت المخصص لرصد الترند")
-                return None
-
-            topic = trend['topic']
-            haystack = topic + " " + " ".join(n['title'] for n in trend['news'])
-            if not _matches(haystack, keywords, blacklist):
-                continue
-
-            slug_key = "trend:" + trend_slug(topic)
-            if slug_key in history_links:
-                print(f"   ⏭️ موضوع مكرر (اتعمل عنه فيديو قبل كده): {topic}")
-                continue
-
-            print(f"🔥 موضوع كروي ترندي: {topic} ({trend['traffic']} بحث)")
-
-            articles = []
-            for news in trend['news']:
-                if len(articles) >= MAX_ARTICLES_PER_TREND:
-                    break
-                if news['url'] in history_links:
-                    continue
-                text = fetch_article_text(news['url'])
-                # استبعاد نفس المقال برابط مختلف (مثلاً bbc.com و bbc.co.uk)
-                if text and any(text[:200] == a['text'][:200] for a in articles):
-                    continue
-                if text:
-                    articles.append({
-                        'title': news['title'],
-                        'url': news['url'],
-                        'source': news.get('source') or 'مصدر إخباري',
-                        'text': text,
-                    })
-
-            if not articles:
-                print(f"   😔 لا توجد مقالات مصدر صالحة للموضوع: {topic}")
-                continue
-
-            return {
-                'topic': topic,
-                'traffic': trend['traffic'],
-                'feed_label': feed_label,
-                'slug_key': slug_key,
-                'articles': articles,
-            }
+    try:
+        from sources_extra import extra_trend_sets
+        extra = extra_trend_sets(get_service)
+    except Exception as e:
+        print(f"⚠️ فشل تحميل المصادر الإضافية: {e}")
+        extra = []
+    for label, trends in extra:
+        res = _try_trend_set(label, trends, history_links, keywords, blacklist, start)
+        if res == "timeout":
+            return None
+        if res:
+            return res
 
     print("😴 لا يوجد موضوع كروي ترندي جديد حالياً")
     return None
