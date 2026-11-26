@@ -46,5 +46,11 @@
         "source": "Yardbarker",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-26 15:04:03"
+    },
+    {
+        "link": "https://www.bbc.com/arabic/articles/c84gndlyl1d5o",
+        "source": "Google Trends مصر",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-26 20:07:50"
     }
 ]
