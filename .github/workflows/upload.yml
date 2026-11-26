@@ -91,6 +91,9 @@ jobs:
         FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+        BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         MANUAL_URL: ${{ github.event.inputs.url }}
         MANUAL_KEYWORD: ${{ github.event.inputs.keyword }}
         GEMINI_TTS_VOICE: Charon
