@@ -88,5 +88,23 @@
         "source": "Google Trends مصر",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-27 10:13:45"
+    },
+    {
+        "link": "https://www.arriyadiyah.com/javascript:;",
+        "source": "Arriyadiyah",
+        "reason": "فشل استخراج المحتوى / المحتوى قصير",
+        "failed_at": "2026-11-27 15:01:05"
+    },
+    {
+        "link": "https://www.arriyadiyah.com/904938/تحضيرات-النصر",
+        "source": "Arriyadiyah",
+        "reason": "فشل استخراج المحتوى / المحتوى قصير",
+        "failed_at": "2026-11-27 15:01:06"
+    },
+    {
+        "link": "https://www.arriyadiyah.com/904960/برشلونة-يستعيد-أولمو",
+        "source": "Arriyadiyah",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-27 15:17:19"
     }
 ]
