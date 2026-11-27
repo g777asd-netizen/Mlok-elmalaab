@@ -76,5 +76,11 @@
         "source": "Google Trends مصر",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-27 00:42:42"
+    },
+    {
+        "link": "https://www.teamtalk.com/manchester-united/senne-lammens-peter-schmeichel-altay-bayindir-man-utd-sporting-cp-verdict",
+        "source": "TeamTalk",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-27 04:08:48"
     }
 ]
