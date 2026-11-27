@@ -70,5 +70,11 @@
         "source": "FourFourTwo",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-26 21:47:38"
+    },
+    {
+        "link": "https://www.bbc.com/sport/football/live/cmewvgj2pjxdt",
+        "source": "Google Trends مصر",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-27 00:42:42"
     }
 ]
