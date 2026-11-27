@@ -25,6 +25,8 @@ EGYPTIAN_DIRECTIVE = (
     "words, thaa is pronounced 's' or 't', thal is 'z' or 'd'. Warm, energetic but natural pace, short "
     "natural pauses at punctuation, no Gulf or Levantine or Modern Standard Arabic pronunciation. "
     "Foreign player and club names are pronounced the way Egyptians say them on TV. "
+    "The transcript is written in Egyptian Arabic (ar-EG). Speak ONLY Arabic from the first word to the last, "
+    "never English, and pronounce every foreign name with an Egyptian accent, not an English one. "
     "Read ONLY the text after the line TRANSCRIPT, do not read these instructions.\n"
     "TRANSCRIPT:\n"
 )
@@ -67,6 +69,38 @@ def _pcm_to_wav(pcm_bytes, out_path, sample_rate=24000):
         wf.writeframes(pcm_bytes)
 
 
+def _is_arabic_speech(wav_path):
+    """يسأل Gemini: المقطع مقروء بالعربي ولا لأ. لو الفحص نفسه فشل نقبل المقطع (ما نوقفش الشغل)."""
+    try:
+        from google import genai
+        from google.genai import types
+        from llm_utils import gemini_models
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        audio = open(wav_path, "rb").read()
+        for m in gemini_models():
+            if is_dead(m):
+                continue
+            try:
+                r = client.models.generate_content(
+                    model=m,
+                    contents=[types.Part.from_bytes(data=audio, mime_type="audio/wav"),
+                              "What language is spoken in this audio? Answer with exactly one word: ARABIC if the speech is Arabic, ENGLISH if it is English, OTHER for anything else."],
+                    config=types.GenerateContentConfig(temperature=0, max_output_tokens=10),
+                )
+                ans = (r.text or "").strip().upper()
+                print(f"🔎 فحص لغة المقطع ({m}): {ans}")
+                if "ARABIC" in ans:
+                    return True
+                if "ENGLISH" in ans or "OTHER" in ans:
+                    return False
+            except Exception as e:
+                mark_dead(m, e)
+                continue
+    except Exception as e:
+        print(f"ℹ️ فحص اللغة اتخطى: {str(e)[:100]}")
+    return True
+
+
 def _synth_gemini_segment(text, out_wav):
     from google import genai
     from google.genai import types
@@ -99,6 +133,8 @@ def _synth_gemini_segment(text, out_wav):
                 if seconds < max(1.0, len(text) / 30.0):
                     raise RuntimeError(f"صوت قصير مشبوه ({seconds:.1f}ث لنص {len(text)} حرف)")
                 _pcm_to_wav(data, out_wav)
+                if not _is_arabic_speech(out_wav):
+                    raise RuntimeError("المقطع اتقرا بغير العربي")
                 return True
             except Exception as e:
                 last_err = e
@@ -143,7 +179,7 @@ async def generate_voice(text, out_path, work_dir="."):
     spoken_text = prepare_for_speech(text)
     print("SPOKEN_TEXT_PREVIEW:", spoken_text[:300])
 
-    if GEMINI_API_KEY:
+    if GEMINI_API_KEY and os.environ.get("FORCE_EDGE_TTS") != "1":
         segments = split_script(spoken_text)
         print(f"🎙️ توليد الصوت بـ Gemini ({GEMINI_TTS_VOICE}) على {len(segments)} مقطع")
         seg_dir = os.path.join(work_dir, "tts_segments")
