@@ -867,9 +867,14 @@ def upload_to_youtube(video_path, title, description, tags, is_shorts, thumbnail
     video_type = "شورتس" if is_shorts else "فيديو"
     print(f"🚀 جاري رفع {video_type} لليوتيوب...")
 
-    final_title = title
-    if is_shorts:
-        final_title = title + " #Shorts"
+    # قناة عربية 100%: لا حروف إنجليزية في العنوان أو الوصف أو الوسوم
+    title = clean_text_strict(title) or CHANNEL_NAME_AR
+    # نحافظ على الأسطر وعلى الروابط (http) كما هي، وننضف باقي النص من الإنجليزي
+    description = "\n".join(
+        (ln if "http" in ln else clean_text_strict(ln)) for ln in (description or "").split("\n"))
+    tags = [clean_text_strict(t).replace(' ', '_') for t in tags]
+    tags = [('#' + t.lstrip('#')) for t in tags if t.lstrip('#')]
+    final_title = title[:100]
 
     hashtags_str = " ".join(tags)
     full_description = f"{description}\n\n{hashtags_str}"
@@ -885,7 +890,9 @@ def upload_to_youtube(video_path, title, description, tags, is_shorts, thumbnail
             'title': final_title,
             'description': full_description,
             'tags': clean_tags,
-            'categoryId': '17'
+            'categoryId': '17',
+            'defaultLanguage': 'ar',
+            'defaultAudioLanguage': 'ar'
         },
         'status': {
             'privacyStatus': 'public',
