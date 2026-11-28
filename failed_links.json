@@ -124,5 +124,47 @@
         "source": "Google Trends مصر",
         "reason": "فشل رفع الفيديو لفيسبوك",
         "failed_at": "2026-11-28 03:52:53"
+    },
+    {
+        "link": "https://www.yardbarker.com/soccer/players/youssef_en_nesyri/905080",
+        "source": "Yardbarker",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-28 10:01:27"
+    },
+    {
+        "link": "https://www.yardbarker.com/soccer/players/santiago_rodriguez/906609",
+        "source": "Yardbarker",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-28 10:01:27"
+    },
+    {
+        "link": "https://www.yardbarker.com/soccer/teams/bayern_munich/17444",
+        "source": "Yardbarker",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-28 10:01:27"
+    },
+    {
+        "link": "https://fieldlevelmedia.com/soccer/mls/",
+        "source": "Yardbarker",
+        "reason": "فشل استخراج المحتوى / المحتوى قصير",
+        "failed_at": "2026-11-28 10:01:35"
+    },
+    {
+        "link": "https://www.yardbarker.com/college_football",
+        "source": "Yardbarker",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-28 10:01:36"
+    },
+    {
+        "link": "https://www.fourfourtwo.com/transfer/manchester-united-in-talks-for-the-next-riccardo-calafiori-to-be-mauricio-pochettinos-first-signing-report",
+        "source": "FourFourTwo",
+        "reason": "العنوان لا يحتوي على كلمات مفتاحية رياضية",
+        "failed_at": "2026-11-28 10:01:36"
+    },
+    {
+        "link": "https://www.fourfourtwo.com/person/player/at-some-point-it-has-to-come-to-an-end-ex-liverpool-defender-makes-honest-virgil-van-dijk-exit-admission",
+        "source": "FourFourTwo",
+        "reason": "فشل رفع الفيديو لفيسبوك",
+        "failed_at": "2026-11-28 10:15:55"
     }
 ]
